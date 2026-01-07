@@ -139,6 +139,11 @@ with tab2:
 
 
 # ===== 탭 3: 조 편성 =====
+import random
+from collections import defaultdict
+import pandas as pd
+import io
+
 def parse_names(raw: str, delim: str):
     if delim == "\\n":
         parts = raw.splitlines()
@@ -218,7 +223,7 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
         for i in range(k):
             teams[i]["섹장"] = lead_pick[i]
 
-        # 3) 쩌리 배정
+        # 3) 쩌리
         all_extras = extras + inv_leftover + lead_leftover
         random.shuffle(all_extras)
         
@@ -231,51 +236,48 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
 
     return None, f"조건을 만족하는 조합을 찾지 못했습니다. (재시도 {max_tries}회)"
 
-def format_teams_expanded(teams):
-    # ===== 수정: 행/열 변경 + 쩌리를 한 명당 한 행 =====
-    import pandas as pd
+def format_teams_horizontal_table(teams):
+    """
+    각 열이 한 조가 되도록 행/렬 변경.
+    쩌리가 여러 명이면 각 칸에 한 명씩.
+    """
+    # 쩌리의 최대 명수 구하기
+    max_jjuri = max((len(t["쩌리"]) for t in teams), default=0)
     
-    rows = []
-    for i, t in enumerate(teams, start=1):
-        if not t["쩌리"]:  # 쩌리가 없으면
-            rows.append({
-                "조": f"{i}조",
-                "조사자": t["조사자"],
-                "섹장": t["섹장"],
-                "쩌리": ""
-            })
-        else:  # 쩌리가 여러 명이면 각 명마다 행 생성
-            for j, jjuri in enumerate(t["쩌리"]):
-                if j == 0:  # 첫 번째 쩌리 (조사자/섹장과 같은 행)
-                    rows.append({
-                        "조": f"{i}조",
-                        "조사자": t["조사자"],
-                        "섹장": t["섹장"],
-                        "쩌리": jjuri
-                    })
-                else:  # 나머지 쩌리들 (별도 행, 조 칼럼만 공란)
-                    rows.append({
-                        "조": "",
-                        "조사자": "",
-                        "섹장": "",
-                        "쩌리": jjuri
-                    })
+    # 행 구성: 역할별 (조사자, 섹장, 쩌리 1, 쩌리 2, ...)
+    rows_data = []
     
-    return pd.DataFrame(rows)
+    # 1행: 조사자
+    row_investigator = ["조사자"] + [t["조사자"] for t in teams]
+    rows_data.append(row_investigator)
+    
+    # 2행: 섹장
+    row_leader = ["섹장"] + [t["섹장"] for t in teams]
+    rows_data.append(row_leader)
+    
+    # 3행~: 쩌리 (한 행에 한 명씩)
+    for jjuri_idx in range(max_jjuri):
+        row_jjuri = [f"쩌리{jjuri_idx + 1}"]
+        for t in teams:
+            if jjuri_idx < len(t["쩌리"]):
+                row_jjuri.append(t["쩌리"][jjuri_idx])
+            else:
+                row_jjuri.append("")  # 빈 칸
+        rows_data.append(row_jjuri)
+    
+    # 컬럼명: 조역할, 1조, 2조, ...
+    columns = ["역할"] + [f"{i}조" for i in range(1, len(teams) + 1)]
+    
+    df = pd.DataFrame(rows_data, columns=columns)
+    return df
 
-def teams_to_excel(teams):
-    # ===== 엑셀 파일 생성 (바이너리) =====
-    import pandas as pd
-    from io import BytesIO
-    
-    df = format_teams_expanded(teams)
-    
-    buffer = BytesIO()
+def create_excel_buffer(df):
+    """DataFrame을 메모리상 Excel 파일로 변환"""
+    buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name="조편성")
-    
+        df.to_excel(writer, sheet_name='조편성', index=False)
     buffer.seek(0)
-    return buffer.getvalue()
+    return buffer
 
 with tab3:
     st.subheader("👥 조 편성 (조사자/섹장/쩌리)")
@@ -321,18 +323,24 @@ with tab3:
         if err:
             st.error(err)
         else:
-            df = format_teams_expanded(teams)
+            df = format_teams_horizontal_table(teams)
             
-            # 표 표시
+            # 표 형식으로 표시
             st.dataframe(df, use_container_width=True, hide_index=True)
             
-            # ===== 수정: 엑셀 다운로드 버튼 =====
-            excel_data = teams_to_excel(teams)
+            # Excel 다운로드 버튼
+            excel_buffer = create_excel_buffer(df)
             st.download_button(
-                label="📥 엑셀 파일로 다운로드",
-                data=excel_data,
-                file_name="조편성.xlsx",
+                label="📥 Excel 파일 다운로드 (.xlsx)",
+                data=excel_buffer,
+                file_name="조편성_결과.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
             
-            st.markdown("💡 위 엑셀 파일을 다운로드하여 원하는 곳에 붙여넣기할 수 있습니다.")
+            # 복사/붙여넣기용 탭 형식 텍스트
+            st.markdown("### 복사/붙여넣기 (엑셀용)")
+            st.info("아래 텍스트를 Ctrl+C로 복사 후 엑셀에 바로 붙여넣기 가능합니다.")
+            
+            # DataFrame을 탭 구분 텍스트로 변환
+            tsv_text = df.to_csv(sep='\t', index=False)
+            st.text_area("", value=tsv_text, height=150, disabled=True)
