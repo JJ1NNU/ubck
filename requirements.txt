@@ -1,0 +1,7 @@
+streamlit
+groq
+streamlit-folium
+folium 
+geopandas
+random
+collections
