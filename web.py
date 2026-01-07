@@ -185,7 +185,6 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
     leaders = leaders[:]
     extras = extras[:]
 
-    # ===== 수정 1: 중복 제거 =====
     all_names = investigators + leaders + extras
     if len(set(all_names)) != len(all_names):
         return None, "후보 명단(조사자/섹장/쩌리)에 중복 이름이 있습니다. 중복을 제거해 주세요."
@@ -204,22 +203,22 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
 
         # 1) 조사자 배정
         inv_pick = investigators[:k]
-        inv_leftover = investigators[k:]  # ===== 탈락자는 쩌리로 =====
+        inv_leftover = investigators[k:]
         for i in range(k):
             teams[i]["조사자"] = inv_pick[i]
 
-        # 2) 섹장 배정 (조사자와 겹치지 않게)
+        # 2) 섹장 배정
         used = set(inv_pick)
         lead_pool = [x for x in leaders if x not in used]
         if len(lead_pool) < k:
             continue
         random.shuffle(lead_pool)
         lead_pick = lead_pool[:k]
-        lead_leftover = [x for x in leaders if x not in lead_pick and x not in used]  # ===== 탈락자는 쩌리로 =====
+        lead_leftover = [x for x in leaders if x not in lead_pick and x not in used]
         for i in range(k):
             teams[i]["섹장"] = lead_pick[i]
 
-        # 3) 쩌리 = 원래 쩌리 후보 + 조사자 탈락 + 섹장 탈락
+        # 3) 쩌리 배정
         all_extras = extras + inv_leftover + lead_leftover
         random.shuffle(all_extras)
         
@@ -232,20 +231,51 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
 
     return None, f"조건을 만족하는 조합을 찾지 못했습니다. (재시도 {max_tries}회)"
 
-def format_teams_table(teams):
-    # ===== 수정 2: 표 형식으로 변환 =====
+def format_teams_expanded(teams):
+    # ===== 수정: 행/열 변경 + 쩌리를 한 명당 한 행 =====
     import pandas as pd
     
     rows = []
     for i, t in enumerate(teams, start=1):
-        jjuri_str = ", ".join(t["쩌리"]) if t["쩌리"] else "-"
-        rows.append({
-            "조": f"{i}조",
-            "조사자": t["조사자"],
-            "섹장": t["섹장"],
-            "쩌리": jjuri_str
-        })
+        if not t["쩌리"]:  # 쩌리가 없으면
+            rows.append({
+                "조": f"{i}조",
+                "조사자": t["조사자"],
+                "섹장": t["섹장"],
+                "쩌리": ""
+            })
+        else:  # 쩌리가 여러 명이면 각 명마다 행 생성
+            for j, jjuri in enumerate(t["쩌리"]):
+                if j == 0:  # 첫 번째 쩌리 (조사자/섹장과 같은 행)
+                    rows.append({
+                        "조": f"{i}조",
+                        "조사자": t["조사자"],
+                        "섹장": t["섹장"],
+                        "쩌리": jjuri
+                    })
+                else:  # 나머지 쩌리들 (별도 행, 조 칼럼만 공란)
+                    rows.append({
+                        "조": "",
+                        "조사자": "",
+                        "섹장": "",
+                        "쩌리": jjuri
+                    })
+    
     return pd.DataFrame(rows)
+
+def teams_to_excel(teams):
+    # ===== 엑셀 파일 생성 (바이너리) =====
+    import pandas as pd
+    from io import BytesIO
+    
+    df = format_teams_expanded(teams)
+    
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name="조편성")
+    
+    buffer.seek(0)
+    return buffer.getvalue()
 
 with tab3:
     st.subheader("👥 조 편성 (조사자/섹장/쩌리)")
@@ -264,7 +294,7 @@ with tab3:
         extras_raw = st.text_area("쩌리 후보 (이름들)", height=180, help="여기는 비워둬도 됩니다. 조사자/섹장 탈락자가 자동으로 쩌리가 됩니다.")
 
     st.markdown("### 제약조건(선택)")
-    pair_delim = st.text_input("같이/다른 팀 '쌍' 구분자", value="-")  # ===== 수정 3: 기본값 - =====
+    pair_delim = st.text_input("같이/다른 팀 '쌍' 구분자", value="-")
     must_together_raw = st.text_area("꼭 같은 팀 (한 줄에: A-B)", height=120)
     must_apart_raw = st.text_area("꼭 떨어져야 함 (한 줄에: A-B)", height=120)
 
@@ -291,13 +321,18 @@ with tab3:
         if err:
             st.error(err)
         else:
-            df = format_teams_table(teams)
+            df = format_teams_expanded(teams)
+            
+            # 표 표시
             st.dataframe(df, use_container_width=True, hide_index=True)
             
-            # 복사 편의를 위한 텍스트 버전도 제공
-            with st.expander("📋 텍스트로 보기 (복사용)"):
-                text_output = ""
-                for i, t in enumerate(teams, start=1):
-                    jjuri_str = ", ".join(t["쩌리"]) if t["쩌리"] else "-"
-                    text_output += f"[{i}조] 조사자: {t['조사자']} / 섹장: {t['섹장']} / 쩌리: {jjuri_str}\n"
-                st.text_area("", value=text_output, height=200)
+            # ===== 수정: 엑셀 다운로드 버튼 =====
+            excel_data = teams_to_excel(teams)
+            st.download_button(
+                label="📥 엑셀 파일로 다운로드",
+                data=excel_data,
+                file_name="조편성.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            st.markdown("💡 위 엑셀 파일을 다운로드하여 원하는 곳에 붙여넣기할 수 있습니다.")
