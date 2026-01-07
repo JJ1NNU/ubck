@@ -140,7 +140,6 @@ with tab2:
 
 # ===== 탭 3: 조 편성 =====
 def parse_names(raw: str, delim: str):
-    # delim이 "\n" 같은 문자열로 들어오는 경우 처리
     if delim == "\\n":
         parts = raw.splitlines()
     else:
@@ -148,17 +147,12 @@ def parse_names(raw: str, delim: str):
     return [p.strip() for p in parts if p.strip()]
 
 def parse_pairs(raw: str, pair_delim: str):
-    """
-    한 줄에 "A|B" 형태를 여러 줄로 입력한다고 가정.
-    pair_delim 기본값: "|"
-    """
     pairs = []
     for line in raw.splitlines():
         line = line.strip()
         if not line:
             continue
         if pair_delim not in line:
-            # 형식이 틀린 줄은 무시하거나 에러 처리해도 됨
             continue
         a, b = [x.strip() for x in line.split(pair_delim, 1)]
         if a and b:
@@ -166,16 +160,12 @@ def parse_pairs(raw: str, pair_delim: str):
     return pairs
 
 def check_constraints(teams, must_together, must_apart):
-    """
-    teams: list of dict { '조사자':..., '섹장':..., '쩌리':[...]}
-    """
     person_to_team = {}
     for i, t in enumerate(teams):
         members = [t["조사자"], t["섹장"]] + t["쩌리"]
         for m in members:
             person_to_team[m] = i
 
-    # 입력된 제약 대상이 실제 멤버에 없으면(오타 등) 제약에서 제외하지 않고 실패 처리하는게 안전
     for a, b in must_together:
         if a not in person_to_team or b not in person_to_team:
             return False, f"같이 팀 제약에 존재하지 않는 이름이 있습니다: {a}, {b}"
@@ -195,7 +185,7 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
     leaders = leaders[:]
     extras = extras[:]
 
-    # 중복 이름이 여러 역할에 걸쳐 있으면 “한 사람이 2역할/중복배정” 문제 발생 -> 여기서는 금지
+    # ===== 수정 1: 중복 제거 =====
     all_names = investigators + leaders + extras
     if len(set(all_names)) != len(all_names):
         return None, "후보 명단(조사자/섹장/쩌리)에 중복 이름이 있습니다. 중복을 제거해 주세요."
@@ -214,6 +204,7 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
 
         # 1) 조사자 배정
         inv_pick = investigators[:k]
+        inv_leftover = investigators[k:]  # ===== 탈락자는 쩌리로 =====
         for i in range(k):
             teams[i]["조사자"] = inv_pick[i]
 
@@ -221,14 +212,18 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
         used = set(inv_pick)
         lead_pool = [x for x in leaders if x not in used]
         if len(lead_pool) < k:
-            continue  # 재시도
+            continue
         random.shuffle(lead_pool)
         lead_pick = lead_pool[:k]
+        lead_leftover = [x for x in leaders if x not in lead_pick and x not in used]  # ===== 탈락자는 쩌리로 =====
         for i in range(k):
             teams[i]["섹장"] = lead_pick[i]
 
-        # 3) 쩌리 배정 (라운드로빈)
-        for idx, name in enumerate(extras):
+        # 3) 쩌리 = 원래 쩌리 후보 + 조사자 탈락 + 섹장 탈락
+        all_extras = extras + inv_leftover + lead_leftover
+        random.shuffle(all_extras)
+        
+        for idx, name in enumerate(all_extras):
             teams[idx % k]["쩌리"].append(name)
 
         ok, reason = check_constraints(teams, must_together, must_apart)
@@ -237,19 +232,24 @@ def try_make_teams(k, investigators, leaders, extras, must_together, must_apart,
 
     return None, f"조건을 만족하는 조합을 찾지 못했습니다. (재시도 {max_tries}회)"
 
-def format_teams(teams):
-    lines = []
+def format_teams_table(teams):
+    # ===== 수정 2: 표 형식으로 변환 =====
+    import pandas as pd
+    
+    rows = []
     for i, t in enumerate(teams, start=1):
-        members = [f"조사자: {t['조사자']}", f"섹장: {t['섹장']}"]
-        if t["쩌리"]:
-            members.append("쩌리: " + ", ".join(t["쩌리"]))
-        else:
-            members.append("쩌리: (없음)")
-        lines.append(f"[{i}조] " + " / ".join(members))
-    return "\n".join(lines)
+        jjuri_str = ", ".join(t["쩌리"]) if t["쩌리"] else "-"
+        rows.append({
+            "조": f"{i}조",
+            "조사자": t["조사자"],
+            "섹장": t["섹장"],
+            "쩌리": jjuri_str
+        })
+    return pd.DataFrame(rows)
 
 with tab3:
     st.subheader("👥 조 편성 (조사자/섹장/쩌리)")
+    st.info("💡 조사자/섹장 후보 중 선정되지 않은 인원은 자동으로 쩌리로 편입됩니다.")
 
     k = st.number_input("조 개수", min_value=1, value=3, step=1)
 
@@ -261,12 +261,12 @@ with tab3:
     with c2:
         leaders_raw = st.text_area("섹장 후보 (이름들)", height=180)
     with c3:
-        extras_raw = st.text_area("쩌리 후보 (이름들)", height=180)
+        extras_raw = st.text_area("쩌리 후보 (이름들)", height=180, help="여기는 비워둬도 됩니다. 조사자/섹장 탈락자가 자동으로 쩌리가 됩니다.")
 
     st.markdown("### 제약조건(선택)")
-    pair_delim = st.text_input("같이/다른 팀 '쌍' 구분자", value="|")
-    must_together_raw = st.text_area("꼭 같은 팀 (한 줄에: A|B)", height=120)
-    must_apart_raw = st.text_area("꼭 떨어져야 함 (한 줄에: A|B)", height=120)
+    pair_delim = st.text_input("같이/다른 팀 '쌍' 구분자", value="-")  # ===== 수정 3: 기본값 - =====
+    must_together_raw = st.text_area("꼭 같은 팀 (한 줄에: A-B)", height=120)
+    must_apart_raw = st.text_area("꼭 떨어져야 함 (한 줄에: A-B)", height=120)
 
     run_team = st.button("조 편성 생성(랜덤) 🎲", use_container_width=True)
 
@@ -291,5 +291,13 @@ with tab3:
         if err:
             st.error(err)
         else:
-            out = format_teams(teams)
-            st.text_area("결과(드래그해서 복사)", value=out, height=260)
+            df = format_teams_table(teams)
+            st.dataframe(df, use_container_width=True, hide_index=True)
+            
+            # 복사 편의를 위한 텍스트 버전도 제공
+            with st.expander("📋 텍스트로 보기 (복사용)"):
+                text_output = ""
+                for i, t in enumerate(teams, start=1):
+                    jjuri_str = ", ".join(t["쩌리"]) if t["쩌리"] else "-"
+                    text_output += f"[{i}조] 조사자: {t['조사자']} / 섹장: {t['섹장']} / 쩌리: {jjuri_str}\n"
+                st.text_area("", value=text_output, height=200)
