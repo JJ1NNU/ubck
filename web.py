@@ -297,8 +297,8 @@ with tab3:
 
     st.markdown("### 제약조건(선택)")
     pair_delim = st.text_input("같이/다른 팀 '쌍' 구분자", value="-")
-    must_together_raw = st.text_area("꼭 같은 팀 (한 줄에: A-B)", height=120)
-    must_apart_raw = st.text_area("꼭 떨어져야 함 (한 줄에: A-B)", height=120)
+    must_together_raw = st.text_area("꼭 같은 팀 (여러 쌍 가능: 구분자가 "-"라면 한 줄에 A-B)", height=120)
+    must_apart_raw = st.text_area("꼭 다른 팀 (여러 쌍 가능: 구분자가 "-"라면 한 줄에 A-B)", height=120)
 
     run_team = st.button("조 편성 생성(랜덤) 🎲", use_container_width=True)
 
