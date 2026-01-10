@@ -108,14 +108,50 @@ with tab2:
     # 구역별 색상 자동 생성 (sector 값에 따라)
     def get_color_for_sector(sector_value, all_sectors):
         """구역 이름에 따라 고유 색상 할당"""
-        colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 
-                  'lightred', 'beige', 'darkblue', 'darkgreen', 'cadetblue', 
-                  'darkpurple', 'pink', 'lightblue', 'lightgreen', 'gray']
+        colors = ['red', 'blue', 'green', 'purple', 'orange','darkblue', 'darkgreen', 'darkpurple', 'pink']
         try:
             idx = list(all_sectors).index(sector_value)
             return colors[idx % len(colors)]
         except:
             return 'blue'
+
+    def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None):
+        # shapely geometry: Point or MultiPoint
+        if geom is None:
+            return
+
+        gtype = getattr(geom, "geom_type", "")
+
+        if gtype == "Point":
+            folium.CircleMarker(
+                location=[geom.y, geom.x],
+                radius=7,
+                color=color,
+                weight=3,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.9,
+                popup=popup_text,
+                tooltip=tooltip_text,
+            ).add_to(m)
+
+        elif gtype == "MultiPoint":
+            for p in geom.geoms:
+                folium.CircleMarker(
+                    location=[p.y, p.x],
+                    radius=7,
+                    color=color,
+                    weight=3,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.9,
+                    popup=popup_text,
+                    tooltip=tooltip_text,
+                ).add_to(m)
+
+        else:
+            # 혹시 모르는 타입이면 GeoJson으로 fallback
+            folium.GeoJson(geom).add_to(m)
 
     # 각 하위 탭에서 해당 Shapefile 표시
     for idx, (subtab, config) in enumerate(zip(subtabs, shapefile_configs)):
@@ -237,20 +273,17 @@ with tab2:
                         ).add_to(m)
                 
                 elif config["type"] == "point":
-                    for idx_row, row in gdf.iterrows():
+                    for _, row in gdf.iterrows():
                         sector_name = row[sector_col] if sector_col else "포인트"
                         color = get_color_for_sector(sector_name, unique_sectors)
-                        
-                        folium.CircleMarker(
-                            location=[row['geometry'].y, row['geometry'].x],
-                            radius=8,
-                            popup=f"구역: {sector_name}",
-                            tooltip=f"구역: {sector_name}",
+
+                        add_point_geometry_to_map(
+                            row["geometry"],
+                            m,
                             color=color,
-                            fill=True,
-                            fillColor=color,
-                            fillOpacity=0.7
-                        ).add_to(m)
+                            popup_text=f"구역: {sector_name}",
+                            tooltip_text=f"구역: {sector_name}",
+                        )
                 
                 # 내 위치 마커 (실시간)
                 if location and location.get("latitude"):
@@ -273,8 +306,8 @@ with tab2:
                 
                 folium.LayerControl().add_to(m)
                 
-                # 지도 렌더링 (key를 탭별로 다르게 설정하여 독립적으로 동작)
-                st_folium(m, width=1200, height=600, key=f"map_{idx}")
+                # 지도 렌더링
+                st_folium(m, use_container_width=True, height=420, key=f"map_{idx}")
                 
                 # GPS 정보 표시
                 if location and location.get("latitude"):
