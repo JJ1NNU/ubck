@@ -274,35 +274,68 @@ with tab2:
                                 """)
                             ).add_to(m)
                     
+                    # 기존 폴리곤 처리 부분을 아래로 교체
                     elif layer_type == "polygon":
-                        for idx_row, row in gdf.iterrows():
-                            sector_name = row[sector_col] if sector_col else "구역 정보 없음"
-                            color = get_color_for_sector(sector_name, unique_sectors)
+                        # 하구 폴리곤은 blue로 고정
+                        if tab_config["name"] == "하구":
+                            fixed_color = 'blue'
                             
-                            folium.GeoJson(
-                                row['geometry'],
-                                style_function=lambda x, color=color: {
-                                    'fillColor': color,
-                                    'color': color,
-                                    'weight': 2,
-                                    'fillOpacity': 0.3,
-                                    'opacity': 0.8
-                                },
-                                tooltip=f"{layer_config['layer_name']} - {sector_name}"
-                            ).add_to(m)
-                            
-                            # 폴리곤 중심에 구역명 표시
-                            centroid = row['geometry'].centroid
-                            folium.Marker(
-                                location=[centroid.y, centroid.x],
-                                icon=folium.DivIcon(html=f"""
-                                    <div style="font-size: 10pt; color: {color}; font-weight: bold; 
-                                         text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
-                                         -1px 1px 0 white, 1px 1px 0 white;">
-                                        [{sector_name}]
-                                    </div>
-                                """)
-                            ).add_to(m)
+                            for idx_row, row in gdf.iterrows():
+                                sector_name = row[sector_col] if sector_col else "구역 정보 없음"
+                                
+                                folium.GeoJson(
+                                    row['geometry'],
+                                    style_function=lambda x, color=fixed_color: {
+                                        'fillColor': color,
+                                        'color': color,
+                                        'weight': 2,
+                                        'fillOpacity': 0.3,
+                                        'opacity': 0.8
+                                    },
+                                    tooltip=f"{layer_config['layer_name']} - {sector_name}"
+                                ).add_to(m)
+                                
+                                # 라벨도 blue로
+                                centroid = row['geometry'].centroid
+                                folium.Marker(
+                                    location=[centroid.y, centroid.x],
+                                    icon=folium.DivIcon(html=f"""
+                                        <div style="font-size: 10pt; color: {fixed_color}; font-weight: bold; 
+                                            text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
+                                            -1px 1px 0 white, 1px 1px 0 white;">
+                                            [{sector_name}]
+                                        </div>
+                                    """)
+                                ).add_to(m)
+                        
+                        else:
+                            for idx_row, row in gdf.iterrows():
+                                sector_name = row[sector_col] if sector_col else "구역 정보 없음"
+                                color = get_color_for_sector(sector_name, unique_sectors)
+                                
+                                folium.GeoJson(
+                                    row['geometry'],
+                                    style_function=lambda x, color=color: {
+                                        'fillColor': color,
+                                        'color': color,
+                                        'weight': 2,
+                                        'fillOpacity': 0.3,
+                                        'opacity': 0.8
+                                    },
+                                    tooltip=f"{layer_config['layer_name']} - {sector_name}"
+                                ).add_to(m)
+                                
+                                centroid = row['geometry'].centroid
+                                folium.Marker(
+                                    location=[centroid.y, centroid.x],
+                                    icon=folium.DivIcon(html=f"""
+                                        <div style="font-size: 10pt; color: {color}; font-weight: bold; 
+                                            text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
+                                            -1px 1px 0 white, 1px 1px 0 white;">
+                                            [{sector_name}]
+                                        </div>
+                                    """)
+                                ).add_to(m)
                     
                     elif layer_type == "point":
                         for _, row in gdf.iterrows():
