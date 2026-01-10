@@ -102,7 +102,7 @@ with tab2:
         
         # 브이월드 베이스맵 추가
         folium.TileLayer(
-            tiles=f'http://xdworld.vworld.kr:8080/2d/Base/{{z}}/{{y}}/{{x}}.png',
+            tiles=f'http://xdworld.vworld.kr:8080/2d/Base/service/{{z}}/{{x}}/{{y}}.png',
             attr='VWorld',
             name='브이월드 기본지도',
             overlay=False,
