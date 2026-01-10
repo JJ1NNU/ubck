@@ -114,7 +114,7 @@ with tab2:
 
     # 구역별 색상 할당
     def get_color_for_sector(sector_value, all_sectors):
-        colors = ['red', 'blue', 'green', 'purple', 'orange','darkblue', 'darkgreen', 'darkpurple', 'pink']
+        colors = ['red', 'blue', 'green', 'purple', 'orange','darkblue', 'darkgreen', '#301934', 'pink']
         try:
             idx = list(all_sectors).index(sector_value)
             return colors[idx % len(colors)]
