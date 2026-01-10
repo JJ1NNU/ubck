@@ -82,7 +82,7 @@ with tab2:
     try:
         # 프로젝트 폴더에 있는 Shapefile을 직접 로드
         # 예: GitHub 리포지토리의 /data/survey_route.shp
-        gdf = gpd.read_file("data/survey_route.shp")
+        gdf = gpd.read_file("data/HacheonLine.shp")
     
         # WGS84(위경도) 좌표계로 변환 (브이월드/웹 지도는 EPSG:4326 사용)
         if gdf.crs != "EPSG:4326":
@@ -100,12 +100,9 @@ with tab2:
             tiles=None  # 기본 타일 제거
         )
         
-        # 브이월드 베이스맵 추가 (Base, Satellite, Hybrid 중 선택)
-        # 참고: 브이월드 API Key가 필요하면 st.secrets에서 불러오세요
-        vworld_key = st.secrets.get("VWORLD_API_KEY", "YOUR_VWORLD_KEY")
-        
+        # 브이월드 베이스맵 추가
         folium.TileLayer(
-            tiles=f'http://api.vworld.kr/req/wmts/1.0.0/{vworld_key}/Base/{{z}}/{{y}}/{{x}}.png',
+            tiles=f'http://xdworld.vworld.kr:8080/2d/Base/{{z}}/{{y}}/{{x}}.png',
             attr='VWorld',
             name='브이월드 기본지도',
             overlay=False,
