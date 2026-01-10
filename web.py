@@ -5,6 +5,8 @@ from streamlit_folium import st_folium
 import geopandas as gpd
 import random
 from collections import defaultdict
+from streamlit_geolocation import streamlit_geolocation
+from folium import Icon, Marker
 
 MODEL_NAME = "openai/gpt-oss-120b" 
 
@@ -78,20 +80,30 @@ with tab1:
 # ===== 탭 2: 지도 시각화 =====
 with tab2:
     st.subheader("🗺️ 조사 경로")
-    
+
+    # GPS 위치 가져오기 버튼
+    location = streamlit_geolocation()
+
     try:
         # 프로젝트 폴더에 있는 Shapefile을 직접 로드
-        # 예: GitHub 리포지토리의 /data/survey_route.shp
         gdf = gpd.read_file("data/HacheonLine.shp")
     
-        # WGS84(위경도) 좌표계로 변환 (브이월드/웹 지도는 EPSG:4326 사용)
+        # WGS84(위경도) 좌표계로 변환
         if gdf.crs != "EPSG:4326":
             gdf = gdf.to_crs(epsg=4326)
         
-        # 지도 중심점 계산 (Shapefile 영역의 중심)
-        bounds = gdf.total_bounds  # [minx, miny, maxx, maxy]
+        # 지도 중심점 계산
+        bounds = gdf.total_bounds
         center_lat = (bounds[1] + bounds[3]) / 2
         center_lon = (bounds[0] + bounds[2]) / 2
+
+        # GPS 위치가 있으면 그것을 중심으로, 없으면 경로 중심으로
+        if location and location.get("latitude"):
+            center_lat = location["latitude"]
+            center_lon = location["longitude"]
+            zoom = 15  # GPS 위치 중심이면 더 확대
+        else:
+            zoom = 12
         
         # Folium 지도 생성 (브이월드 타일 사용)
         m = folium.Map(
@@ -123,11 +135,35 @@ with tab2:
             tooltip=folium.GeoJsonTooltip(fields=list(gdf.columns[:-1]))  # geometry 제외한 속성 표시
         ).add_to(m)
         
-        # 레이어 컨트롤 추가 (On/Off 토글)
-        folium.LayerControl().add_to(m)
+        # 내 위치 마커 추가
+        if location and location.get("latitude"):
+            folium.Marker(
+                location=[location["latitude"], location["longitude"]],
+                popup="📍 현재 위치",
+                tooltip="내 위치",
+                icon=folium.Icon(color='red', icon='user', prefix='fa')
+            ).add_to(m)
+            
+            # 정확도 표시 (옵션)
+            if location.get("accuracy"):
+                folium.Circle(
+                    location=[location["latitude"], location["longitude"]],
+                    radius=location["accuracy"],
+                    color='red',
+                    fill=True,
+                    fillOpacity=0.1,
+                    popup=f"오차범위: {location['accuracy']:.0f}m"
+                ).add_to(m)
         
-        # Streamlit에 지도 렌더링
+        folium.LayerControl().add_to(m)
         st_folium(m, width=1200, height=600)
+        
+        # GPS 정보 표시
+        if location and location.get("latitude"):
+            st.success(f"📍 현재 위치: 위도 {location['latitude']:.6f}, 경도 {location['longitude']:.6f}")
+            st.info(f"정확도: ±{location.get('accuracy', 0):.0f}m")
+        else:
+            st.warning("위치 권한을 허용하면 내 위치가 지도에 표시됩니다.")
         
         # 데이터 미리보기
         with st.expander("📊 Shapefile 속성 테이블 보기"):
