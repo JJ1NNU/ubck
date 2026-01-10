@@ -82,32 +82,38 @@ with tab1:
 with tab2:
     st.subheader("🗺️ 조사 경로")
 
-    # GPS 위치 가져오기 (실시간 추적용)
+    # GPS 위치 가져오기
     col_gps1, col_gps2 = st.columns([1, 4])
     with col_gps1:
         gps_button = st.button("📍 내 위치", use_container_width=True)
 
     location = streamlit_geolocation()
 
-    # 6개 Shapefile에 대한 하위 탭 생성
-    subtabs = st.tabs([
-        "하천 라인", "하천 폴리곤", "하천 포인트",
-        "하구 라인", "하구 폴리곤", "하구 포인트"
-    ])
+    # 2개 메인 탭 생성 (하천/하구)
+    subtabs = st.tabs(["하천", "하구"])
     
-    # Shapefile 경로 매핑
-    shapefile_configs = [
-        {"path": "data/HacheonLine.shp", "type": "line", "name": "하천 라인"},
-        {"path": "data/HacheonPolygon.shp", "type": "polygon", "name": "하천 폴리곤"},
-        {"path": "data/HacheonPoint.shp", "type": "point", "name": "하천 포인트"},
-        {"path": "data/HaguLine.shp", "type": "line", "name": "하구 라인"},
-        {"path": "data/HaguPolygon.shp", "type": "polygon", "name": "하구 폴리곤"},
-        {"path": "data/HaguPoint.shp", "type": "point", "name": "하구 포인트"}
+    # 각 탭별 Shapefile 설정
+    tab_configs = [
+        {
+            "name": "하천",
+            "files": [
+                {"path": "data/HacheonLine.shp", "type": "line", "layer_name": "하천 라인"},
+                {"path": "data/HacheonPolygon.shp", "type": "polygon", "layer_name": "하천 폴리곤"},
+                {"path": "data/HacheonPoint.shp", "type": "point", "layer_name": "하천 포인트"}
+            ]
+        },
+        {
+            "name": "하구",
+            "files": [
+                {"path": "data/HaguLine.shp", "type": "line", "layer_name": "하구 라인"},
+                {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤"},
+                {"path": "data/HaguPoint.shp", "type": "point", "layer_name": "하구 포인트"}
+            ]
+        }
     ]
 
-    # 구역별 색상 자동 생성 (sector 값에 따라)
+    # 구역별 색상 할당
     def get_color_for_sector(sector_value, all_sectors):
-        """구역 이름에 따라 고유 색상 할당"""
         colors = ['red', 'blue', 'green', 'purple', 'orange','darkblue', 'darkgreen', 'darkpurple', 'pink']
         try:
             idx = list(all_sectors).index(sector_value)
@@ -116,7 +122,6 @@ with tab2:
             return 'blue'
 
     def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None):
-        # shapely geometry: Point or MultiPoint
         if geom is None:
             return
 
@@ -150,25 +155,38 @@ with tab2:
                 ).add_to(m)
 
         else:
-            # 혹시 모르는 타입이면 GeoJson으로 fallback
             folium.GeoJson(geom).add_to(m)
 
-    # 각 하위 탭에서 해당 Shapefile 표시
-    for idx, (subtab, config) in enumerate(zip(subtabs, shapefile_configs)):
+    # 각 메인 탭 처리
+    for tab_idx, (subtab, tab_config) in enumerate(zip(subtabs, tab_configs)):
         with subtab:
+            # 폴리곤 on/off 토글
+            show_polygon = st.checkbox(f"{tab_config['name']} 폴리곤 표시", value=True, key=f"polygon_toggle_{tab_idx}")
+            
             try:
-                gdf = gpd.read_file(config["path"])
+                # 모든 파일 로드
+                gdfs = {}
+                all_bounds = []
                 
-                # WGS84 변환
-                if gdf.crs != "EPSG:4326":
-                    gdf = gdf.to_crs(epsg=4326)
+                for file_config in tab_config["files"]:
+                    gdf = gpd.read_file(file_config["path"])
+                    if gdf.crs != "EPSG:4326":
+                        gdf = gdf.to_crs(epsg=4326)
+                    gdfs[file_config["type"]] = {"gdf": gdf, "config": file_config}
+                    all_bounds.append(gdf.total_bounds)
                 
-                # 지도 중심점 계산
-                bounds = gdf.total_bounds
-                default_center_lat = (bounds[1] + bounds[3]) / 2
-                default_center_lon = (bounds[0] + bounds[2]) / 2
+                # 전체 영역의 중심점 계산
+                if all_bounds:
+                    min_x = min(b[0] for b in all_bounds)
+                    min_y = min(b[1] for b in all_bounds)
+                    max_x = max(b[2] for b in all_bounds)
+                    max_y = max(b[3] for b in all_bounds)
+                    default_center_lat = (min_y + max_y) / 2
+                    default_center_lon = (min_x + max_x) / 2
+                else:
+                    default_center_lat, default_center_lon = 37.5, 127.0
                 
-                # GPS 버튼 클릭 시 GPS 위치 중심, 아니면 Shapefile 중심
+                # GPS 위치 설정
                 if gps_button and location and location.get("latitude"):
                     center_lat = location["latitude"]
                     center_lon = location["longitude"]
@@ -199,93 +217,103 @@ with tab2:
                     control=True
                 ).add_to(m)
                 
-                # Sector 컬럼 확인 및 고유값 추출
-                has_sector = 'sector' in gdf.columns or 'Sector' in gdf.columns or 'SECTOR' in gdf.columns
-                sector_col = None
+                # 각 레이어 추가 (라인 -> 폴리곤 -> 포인트 순서)
+                for layer_type in ["line", "polygon", "point"]:
+                    if layer_type not in gdfs:
+                        continue
+                    
+                    # 폴리곤이고 토글이 꺼져있으면 스킵
+                    if layer_type == "polygon" and not show_polygon:
+                        continue
+                    
+                    gdf = gdfs[layer_type]["gdf"]
+                    layer_config = gdfs[layer_type]["config"]
+                    
+                    # Sector 컬럼 찾기
+                    sector_col = None
+                    for col in gdf.columns:
+                        if col.lower() == 'sector':
+                            sector_col = col
+                            break
+                    
+                    if sector_col:
+                        unique_sectors = gdf[sector_col].unique()
+                    else:
+                        unique_sectors = ['default']
+                    
+                    # 레이어별 처리
+                    if layer_type == "line":
+                        for idx_row, row in gdf.iterrows():
+                            sector_name = row[sector_col] if sector_col else "구역 정보 없음"
+                            color = get_color_for_sector(sector_name, unique_sectors)
+                            
+                            folium.GeoJson(
+                                row['geometry'],
+                                style_function=lambda x, color=color: {
+                                    'color': color,
+                                    'weight': 4,
+                                    'opacity': 0.8
+                                },
+                                tooltip=f"{layer_config['layer_name']} - {sector_name}"
+                            ).add_to(m)
+                            
+                            # 라인 중심에 구역명 표시
+                            centroid = row['geometry'].centroid
+                            folium.Marker(
+                                location=[centroid.y, centroid.x],
+                                icon=folium.DivIcon(html=f"""
+                                    <div style="font-size: 12pt; color: {color}; font-weight: bold; 
+                                         text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
+                                         -1px 1px 0 white, 1px 1px 0 white;">
+                                        {sector_name}
+                                    </div>
+                                """)
+                            ).add_to(m)
+                    
+                    elif layer_type == "polygon":
+                        for idx_row, row in gdf.iterrows():
+                            sector_name = row[sector_col] if sector_col else "구역 정보 없음"
+                            color = get_color_for_sector(sector_name, unique_sectors)
+                            
+                            folium.GeoJson(
+                                row['geometry'],
+                                style_function=lambda x, color=color: {
+                                    'fillColor': color,
+                                    'color': color,
+                                    'weight': 2,
+                                    'fillOpacity': 0.3,
+                                    'opacity': 0.8
+                                },
+                                tooltip=f"{layer_config['layer_name']} - {sector_name}"
+                            ).add_to(m)
+                            
+                            # 폴리곤 중심에 구역명 표시
+                            centroid = row['geometry'].centroid
+                            folium.Marker(
+                                location=[centroid.y, centroid.x],
+                                icon=folium.DivIcon(html=f"""
+                                    <div style="font-size: 10pt; color: {color}; font-weight: bold; 
+                                         text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
+                                         -1px 1px 0 white, 1px 1px 0 white;">
+                                        [{sector_name}]
+                                    </div>
+                                """)
+                            ).add_to(m)
+                    
+                    elif layer_type == "point":
+                        for _, row in gdf.iterrows():
+                            sector_name = row[sector_col] if sector_col else "포인트"
+                            color = get_color_for_sector(sector_name, unique_sectors)
+                            
+                            add_point_geometry_to_map(
+                                row["geometry"],
+                                m,
+                                color=color,
+                                popup_text=f"{layer_config['layer_name']} - {sector_name}",
+                                tooltip_text=f"{layer_config['layer_name']} - {sector_name}",
+                            )
                 
-                for col in gdf.columns:
-                    if col.lower() == 'sector':
-                        sector_col = col
-                        break
-                
-                if sector_col:
-                    unique_sectors = gdf[sector_col].unique()
-                else:
-                    unique_sectors = ['default']
-                
-                # Shapefile Geometry 추가 (구역별 색상 + 라벨)
-                if config["type"] == "line":
-                    for idx_row, row in gdf.iterrows():
-                        sector_name = row[sector_col] if sector_col else "구역 정보 없음"
-                        color = get_color_for_sector(sector_name, unique_sectors)
-                        
-                        folium.GeoJson(
-                            row['geometry'],
-                            style_function=lambda x, color=color: {
-                                'color': color,
-                                'weight': 4,
-                                'opacity': 0.8
-                            },
-                            tooltip=f"구역: {sector_name}"
-                        ).add_to(m)
-                        
-                        # 라인 중심점에 구역명 표시
-                        centroid = row['geometry'].centroid
-                        folium.Marker(
-                            location=[centroid.y, centroid.x],
-                            icon=folium.DivIcon(html=f"""
-                                <div style="font-size: 12pt; color: {color}; font-weight: bold; 
-                                     text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
-                                     -1px 1px 0 white, 1px 1px 0 white;">
-                                    {sector_name}
-                                </div>
-                            """)
-                        ).add_to(m)
-                
-                elif config["type"] == "polygon":
-                    for idx_row, row in gdf.iterrows():
-                        sector_name = row[sector_col] if sector_col else "구역 정보 없음"
-                        color = get_color_for_sector(sector_name, unique_sectors)
-                        
-                        folium.GeoJson(
-                            row['geometry'],
-                            style_function=lambda x, color=color: {
-                                'fillColor': color,
-                                'color': color,
-                                'weight': 2,
-                                'fillOpacity': 0.3,
-                                'opacity': 0.8
-                            },
-                            tooltip=f"구역: {sector_name}"
-                        ).add_to(m)
-                        
-                        # 폴리곤 중심에 구역명 표시
-                        centroid = row['geometry'].centroid
-                        folium.Marker(
-                            location=[centroid.y, centroid.x],
-                            icon=folium.DivIcon(html=f"""
-                                <div style="font-size: 12pt; color: {color}; font-weight: bold; 
-                                     text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
-                                     -1px 1px 0 white, 1px 1px 0 white;">
-                                    {sector_name}
-                                </div>
-                            """)
-                        ).add_to(m)
-                
-                elif config["type"] == "point":
-                    for _, row in gdf.iterrows():
-                        sector_name = row[sector_col] if sector_col else "포인트"
-                        color = get_color_for_sector(sector_name, unique_sectors)
-
-                        add_point_geometry_to_map(
-                            row["geometry"],
-                            m,
-                            color=color,
-                            popup_text=f"구역: {sector_name}",
-                            tooltip_text=f"구역: {sector_name}",
-                        )
-                
-                # 내 위치 마커 (실시간)
+                # 내 위치 마커
                 if location and location.get("latitude"):
                     folium.Marker(
                         location=[location["latitude"], location["longitude"]],
@@ -306,8 +334,8 @@ with tab2:
                 
                 folium.LayerControl().add_to(m)
                 
-                # 지도 렌더링
-                st_folium(m, use_container_width=True, height=420, key=f"map_{idx}")
+                # 지도 렌더링 (모바일 친화)
+                st_folium(m, use_container_width=True, height=420, key=f"map_{tab_idx}")
                 
                 # GPS 정보 표시
                 if location and location.get("latitude"):
@@ -316,13 +344,14 @@ with tab2:
                 else:
                     st.warning("위치 권한을 허용하면 내 위치가 지도에 표시됩니다.")
                 
-                # 실시간 추적을 위한 자동 새로고침 (5초마다)
+                # 실시간 추적
                 if location and location.get("latitude"):
-                    time.sleep(0.1)  # 과도한 새로고침 방지
+                    time.sleep(0.1)
                     st.rerun()
             
             except Exception as e:
-                st.error(f"{config['name']} 로딩 실패: {e}")
+                st.error(f"{tab_config['name']} 지도 로딩 실패: {e}")
+
 
 
 # ===== 탭 3: 조 편성 =====
