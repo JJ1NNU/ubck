@@ -99,12 +99,14 @@ with tab2:
             zoom_start=12,
             tiles=None  # 기본 타일 제거
         )
-        
+        # 브이월드 API 키
+        vworld_key = st.secrets["VWORLD_API_KEY"]
+
         # 브이월드 베이스맵 추가
         folium.TileLayer(
-            tiles=f'http://xdworld.vworld.kr:8080/2d/Base/service/{{z}}/{{x}}/{{y}}.png',
+            tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{vworld_key}/Base/{{z}}/{{y}}/{{x}}.png',
             attr='VWorld',
-            name='브이월드 기본지도',
+            name='배경지도',
             overlay=False,
             control=True
         ).add_to(m)
