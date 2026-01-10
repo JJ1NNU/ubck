@@ -94,23 +94,23 @@ with tab2:
     
     # 각 탭별 Shapefile 설정
     tab_configs = [
-        {
-            "name": "하천",
-            "files": [
-                {"path": "data/HacheonLine.shp", "type": "line", "layer_name": "하천 라인"},
-                {"path": "data/HacheonPolygon.shp", "type": "polygon", "layer_name": "하천 폴리곤"},
-                {"path": "data/HacheonPoint.shp", "type": "point", "layer_name": "하천 포인트"}
-            ]
-        },
-        {
-            "name": "하구",
-            "files": [
-                {"path": "data/HaguLine.shp", "type": "line", "layer_name": "하구 라인"},
-                {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤"},
-                {"path": "data/HaguPoint.shp", "type": "point", "layer_name": "하구 포인트"}
-            ]
-        }
-    ]
+    {
+        "name": "하천",
+        "files": [
+            {"path": "data/HacheonLine.shp", "type": "line", "layer_name": "하천 라인", "sector_col": "sector"},
+            {"path": "data/HacheonPolygon.shp", "type": "polygon", "layer_name": "하천 폴리곤", "sector_col": "sector"},
+            {"path": "data/HacheonPoint.shp", "type": "point", "layer_name": "하천 포인트", "sector_col": "sector"}
+        ]
+    },
+    {
+        "name": "하구",
+        "files": [
+            {"path": "data/HaguLine.shp", "type": "line", "layer_name": "하구 라인", "sector_col": "sector"},
+            {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤", "sector_col": "code"},  # ← code로 변경
+            {"path": "data/HaguPoint.shp", "type": "point", "layer_name": "하구 포인트", "sector_col": "sector"}
+        ]
+    }
+]
 
     # 구역별 색상 할당
     def get_color_for_sector(sector_value, all_sectors):
@@ -230,17 +230,21 @@ with tab2:
                     layer_config = gdfs[layer_type]["config"]
                     
                     # Sector 컬럼 찾기
-                    sector_col = None
-                    for col in gdf.columns:
-                        if col.lower() == 'sector':
-                            sector_col = col
-                            break
+                    sector_col = layer_config.get("sector_col", "sector")
                     
+                    if sector_col not in gdf.columns:
+                        for col in gdf.columns:
+                            if col.lower() == sector_col.lower():
+                                sector_col = col
+                                break
+                        else:
+                            sector_col = None
+
                     if sector_col:
                         unique_sectors = gdf[sector_col].unique()
                     else:
                         unique_sectors = ['default']
-                    
+                                        
                     # 레이어별 처리
                     if layer_type == "line":
                         for idx_row, row in gdf.iterrows():
