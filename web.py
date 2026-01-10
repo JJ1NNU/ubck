@@ -7,6 +7,7 @@ import random
 from collections import defaultdict
 from streamlit_geolocation import streamlit_geolocation
 from folium import Icon, Marker
+import time
 
 MODEL_NAME = "openai/gpt-oss-120b" 
 
@@ -81,96 +82,214 @@ with tab1:
 with tab2:
     st.subheader("🗺️ 조사 경로")
 
-    # GPS 위치 가져오기 버튼
+    # GPS 위치 가져오기 (실시간 추적용)
+    col_gps1, col_gps2 = st.columns([1, 4])
+    with col_gps1:
+        gps_button = st.button("📍 내 위치", use_container_width=True)
+
     location = streamlit_geolocation()
 
-    try:
-        # 프로젝트 폴더에 있는 Shapefile을 직접 로드
-        gdf = gpd.read_file("data/HacheonLine.shp")
+    # 6개 Shapefile에 대한 하위 탭 생성
+    subtabs = st.tabs([
+        "하천 라인", "하천 폴리곤", "하천 포인트",
+        "하구 라인", "하구 폴리곤", "하구 포인트"
+    ])
     
-        # WGS84(위경도) 좌표계로 변환
-        if gdf.crs != "EPSG:4326":
-            gdf = gdf.to_crs(epsg=4326)
-        
-        # 지도 중심점 계산
-        bounds = gdf.total_bounds
-        center_lat = (bounds[1] + bounds[3]) / 2
-        center_lon = (bounds[0] + bounds[2]) / 2
+    # Shapefile 경로 매핑
+    shapefile_configs = [
+        {"path": "data/HacheonLine.shp", "type": "line", "name": "하천 라인"},
+        {"path": "data/HacheonPolygon.shp", "type": "polygon", "name": "하천 폴리곤"},
+        {"path": "data/HacheonPoint.shp", "type": "point", "name": "하천 포인트"},
+        {"path": "data/HaguLine.shp", "type": "line", "name": "하구 라인"},
+        {"path": "data/HaguPolygon.shp", "type": "polygon", "name": "하구 폴리곤"},
+        {"path": "data/HaguPoint.shp", "type": "point", "name": "하구 포인트"}
+    ]
 
-        # GPS 위치가 있으면 그것을 중심으로, 없으면 경로 중심으로
-        if location and location.get("latitude"):
-            center_lat = location["latitude"]
-            center_lon = location["longitude"]
-            zoom = 15  # GPS 위치 중심이면 더 확대
-        else:
-            zoom = 12
-        
-        # Folium 지도 생성 (브이월드 타일 사용)
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            zoom_start=12,
-            tiles=None  # 기본 타일 제거
-        )
-        # 브이월드 API 키
-        vworld_key = st.secrets["VWORLD_API_KEY"]
+    # 구역별 색상 자동 생성 (sector 값에 따라)
+    def get_color_for_sector(sector_value, all_sectors):
+        """구역 이름에 따라 고유 색상 할당"""
+        colors = ['red', 'blue', 'green', 'purple', 'orange', 'darkred', 
+                  'lightred', 'beige', 'darkblue', 'darkgreen', 'cadetblue', 
+                  'darkpurple', 'pink', 'lightblue', 'lightgreen', 'gray']
+        try:
+            idx = list(all_sectors).index(sector_value)
+            return colors[idx % len(colors)]
+        except:
+            return 'blue'
 
-        # 브이월드 베이스맵 추가
-        folium.TileLayer(
-            tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{vworld_key}/Base/{{z}}/{{y}}/{{x}}.png',
-            attr='VWorld',
-            name='배경지도',
-            overlay=False,
-            control=True
-        ).add_to(m)
-        
-        # Shapefile의 Geometry를 지도에 추가
-        folium.GeoJson(
-            gdf,
-            name="조사 경로",
-            style_function=lambda x: {
-                'color': 'red',
-                'weight': 3,
-                'opacity': 0.8
-            },
-            tooltip=folium.GeoJsonTooltip(fields=list(gdf.columns[:-1]))  # geometry 제외한 속성 표시
-        ).add_to(m)
-        
-        # 내 위치 마커 추가
-        if location and location.get("latitude"):
-            folium.Marker(
-                location=[location["latitude"], location["longitude"]],
-                popup="📍 현재 위치",
-                tooltip="내 위치",
-                icon=folium.Icon(color='red', icon='user', prefix='fa')
-            ).add_to(m)
-            
-            # 정확도 표시 (옵션)
-            if location.get("accuracy"):
-                folium.Circle(
-                    location=[location["latitude"], location["longitude"]],
-                    radius=location["accuracy"],
-                    color='red',
-                    fill=True,
-                    fillOpacity=0.1,
-                    popup=f"오차범위: {location['accuracy']:.0f}m"
+    # 각 하위 탭에서 해당 Shapefile 표시
+    for idx, (subtab, config) in enumerate(zip(subtabs, shapefile_configs)):
+        with subtab:
+            try:
+                gdf = gpd.read_file(config["path"])
+                
+                # WGS84 변환
+                if gdf.crs != "EPSG:4326":
+                    gdf = gdf.to_crs(epsg=4326)
+                
+                # 지도 중심점 계산
+                bounds = gdf.total_bounds
+                default_center_lat = (bounds[1] + bounds[3]) / 2
+                default_center_lon = (bounds[0] + bounds[2]) / 2
+                
+                # GPS 버튼 클릭 시 GPS 위치 중심, 아니면 Shapefile 중심
+                if gps_button and location and location.get("latitude"):
+                    center_lat = location["latitude"]
+                    center_lon = location["longitude"]
+                    zoom = 16
+                elif location and location.get("latitude"):
+                    center_lat = location["latitude"]
+                    center_lon = location["longitude"]
+                    zoom = 15
+                else:
+                    center_lat = default_center_lat
+                    center_lon = default_center_lon
+                    zoom = 13
+                
+                # Folium 지도 생성
+                m = folium.Map(
+                    location=[center_lat, center_lon],
+                    zoom_start=zoom,
+                    tiles=None
+                )
+                
+                # 브이월드 배경지도
+                vworld_key = st.secrets["VWORLD_API_KEY"]
+                folium.TileLayer(
+                    tiles=f'https://api.vworld.kr/req/wmts/1.0.0/{vworld_key}/Base/{{z}}/{{y}}/{{x}}.png',
+                    attr='VWorld',
+                    name='배경지도',
+                    overlay=False,
+                    control=True
                 ).add_to(m)
-        
-        folium.LayerControl().add_to(m)
-        st_folium(m, width=1200, height=600)
-        
-        # GPS 정보 표시
-        if location and location.get("latitude"):
-            st.success(f"📍 현재 위치: 위도 {location['latitude']:.6f}, 경도 {location['longitude']:.6f}")
-            st.info(f"정확도: ±{location.get('accuracy', 0):.0f}m")
-        else:
-            st.warning("위치 권한을 허용하면 내 위치가 지도에 표시됩니다.")
-        
-        # 데이터 미리보기
-        with st.expander("📊 Shapefile 속성 테이블 보기"):
-            st.dataframe(gdf.drop(columns=['geometry']))
-
-    except Exception as e:
-        st.error(f"지도 로딩 실패: {e}")
+                
+                # Sector 컬럼 확인 및 고유값 추출
+                has_sector = 'sector' in gdf.columns or 'Sector' in gdf.columns or 'SECTOR' in gdf.columns
+                sector_col = None
+                
+                for col in gdf.columns:
+                    if col.lower() == 'sector':
+                        sector_col = col
+                        break
+                
+                if sector_col:
+                    unique_sectors = gdf[sector_col].unique()
+                else:
+                    unique_sectors = ['default']
+                
+                # Shapefile Geometry 추가 (구역별 색상 + 라벨)
+                if config["type"] == "line":
+                    for idx_row, row in gdf.iterrows():
+                        sector_name = row[sector_col] if sector_col else "구역 정보 없음"
+                        color = get_color_for_sector(sector_name, unique_sectors)
+                        
+                        folium.GeoJson(
+                            row['geometry'],
+                            style_function=lambda x, color=color: {
+                                'color': color,
+                                'weight': 4,
+                                'opacity': 0.8
+                            },
+                            tooltip=f"구역: {sector_name}"
+                        ).add_to(m)
+                        
+                        # 라인 중심점에 구역명 표시
+                        centroid = row['geometry'].centroid
+                        folium.Marker(
+                            location=[centroid.y, centroid.x],
+                            icon=folium.DivIcon(html=f"""
+                                <div style="font-size: 12pt; color: {color}; font-weight: bold; 
+                                     text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
+                                     -1px 1px 0 white, 1px 1px 0 white;">
+                                    {sector_name}
+                                </div>
+                            """)
+                        ).add_to(m)
+                
+                elif config["type"] == "polygon":
+                    for idx_row, row in gdf.iterrows():
+                        sector_name = row[sector_col] if sector_col else "구역 정보 없음"
+                        color = get_color_for_sector(sector_name, unique_sectors)
+                        
+                        folium.GeoJson(
+                            row['geometry'],
+                            style_function=lambda x, color=color: {
+                                'fillColor': color,
+                                'color': color,
+                                'weight': 2,
+                                'fillOpacity': 0.3,
+                                'opacity': 0.8
+                            },
+                            tooltip=f"구역: {sector_name}"
+                        ).add_to(m)
+                        
+                        # 폴리곤 중심에 구역명 표시
+                        centroid = row['geometry'].centroid
+                        folium.Marker(
+                            location=[centroid.y, centroid.x],
+                            icon=folium.DivIcon(html=f"""
+                                <div style="font-size: 12pt; color: {color}; font-weight: bold; 
+                                     text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
+                                     -1px 1px 0 white, 1px 1px 0 white;">
+                                    {sector_name}
+                                </div>
+                            """)
+                        ).add_to(m)
+                
+                elif config["type"] == "point":
+                    for idx_row, row in gdf.iterrows():
+                        sector_name = row[sector_col] if sector_col else "포인트"
+                        color = get_color_for_sector(sector_name, unique_sectors)
+                        
+                        folium.CircleMarker(
+                            location=[row['geometry'].y, row['geometry'].x],
+                            radius=8,
+                            popup=f"구역: {sector_name}",
+                            tooltip=f"구역: {sector_name}",
+                            color=color,
+                            fill=True,
+                            fillColor=color,
+                            fillOpacity=0.7
+                        ).add_to(m)
+                
+                # 내 위치 마커 (실시간)
+                if location and location.get("latitude"):
+                    folium.Marker(
+                        location=[location["latitude"], location["longitude"]],
+                        popup="📍 현재 위치",
+                        tooltip="내 위치",
+                        icon=folium.Icon(color='red', icon='user', prefix='fa')
+                    ).add_to(m)
+                    
+                    if location.get("accuracy"):
+                        folium.Circle(
+                            location=[location["latitude"], location["longitude"]],
+                            radius=location["accuracy"],
+                            color='red',
+                            fill=True,
+                            fillOpacity=0.1,
+                            popup=f"오차범위: {location['accuracy']:.0f}m"
+                        ).add_to(m)
+                
+                folium.LayerControl().add_to(m)
+                
+                # 지도 렌더링 (key를 탭별로 다르게 설정하여 독립적으로 동작)
+                st_folium(m, width=1200, height=600, key=f"map_{idx}")
+                
+                # GPS 정보 표시
+                if location and location.get("latitude"):
+                    st.success(f"📍 현재 위치: 위도 {location['latitude']:.6f}, 경도 {location['longitude']:.6f}")
+                    st.info(f"정확도: ±{location.get('accuracy', 0):.0f}m")
+                else:
+                    st.warning("위치 권한을 허용하면 내 위치가 지도에 표시됩니다.")
+                
+                # 실시간 추적을 위한 자동 새로고침 (5초마다)
+                if location and location.get("latitude"):
+                    time.sleep(0.1)  # 과도한 새로고침 방지
+                    st.rerun()
+            
+            except Exception as e:
+                st.error(f"{config['name']} 로딩 실패: {e}")
 
 
 # ===== 탭 3: 조 편성 =====
