@@ -108,7 +108,7 @@ with tab2:
         "name": "하구",
         "files": [
             {"path": "data/HaguLine.shp", "type": "line", "layer_name": "하구 라인", "sector_col": "sector"},
-            {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤", "sector_col": "sector"},
+            {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤", "sector_col": "code"},
             {"path": "data/HaguPoint.shp", "type": "point", "layer_name": "하구 포인트", "sector_col": "sector"}
         ]
     }
@@ -285,7 +285,16 @@ with tab2:
                     layer_config = gdfs[layer_type]["config"]
                     
                     # Sector 컬럼 찾기
-                    sector_col = "sector"
+                    sector_col = layer_config.get("sector_col", "sector")
+
+                    # 컬럼이 실제로 존재하는지 확인(대소문자까지)
+                    if sector_col not in gdf.columns:
+                        found = None
+                        for c in gdf.columns:
+                            if c.lower() == sector_col.lower():
+                                found = c
+                                break
+                        sector_col = found  # 못 찾으면 None
                                         
                     # 레이어별 처리
                     if layer_type == "line":
