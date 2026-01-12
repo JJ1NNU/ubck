@@ -226,6 +226,10 @@ with tab2:
     # 각 메인 탭 처리
     for tab_idx, (subtab, tab_config) in enumerate(zip(subtabs, tab_configs)):
         with subtab:
+            zoom_state_key = f"map_zoom_{tab_idx}"
+            if zoom_state_key not in st.session_state:
+                st.session_state[zoom_state_key] = zoom 
+            
             # 폴리곤 on/off 토글
             show_polygon = st.checkbox(f"{tab_config['name']} 폴리곤 표시", value=True, key=f"polygon_toggle_{tab_idx}")
             
@@ -400,7 +404,7 @@ with tab2:
                             loc = str(row["location"]).strip() if "location" in gdf.columns and pd.notna(row["location"]) else ""
                             label_text = f"{se}: {loc}" if se and loc else (loc if loc else None)
 
-                            show_point_labels = st.session_state["map_zoom"] >= ZOOM_LABEL_THRESHOLD
+                            show_point_labels = st.session_state[zoom_state_key] >= ZOOM_LABEL_THRESHOLD
 
                             add_point_geometry_to_map(
                                 row["geometry"],
@@ -439,7 +443,13 @@ with tab2:
                 map_out = st_folium(m, use_container_width=True, height=420, key=f"map_{tab_idx}")
 
                 if map_out and map_out.get("zoom") is not None:
-                    st.session_state["map_zoom"] = map_out["zoom"]
+                    st.session_state[zoom_state_key] = map_out["zoom"]
+
+                if map_out and map_out.get("zoom") is not None:
+                    new_zoom = map_out["zoom"]
+                    if new_zoom != st.session_state[zoom_state_key]:
+                        st.session_state[zoom_state_key] = new_zoom
+                        st.rerun()
                 
                 # GPS 정보 표시
                 if location and location.get("latitude"):
