@@ -12,74 +12,73 @@ import pandas as pd
 import io
 import re
 
-MODEL_NAME = "openai/gpt-oss-120b" 
+# MODEL_NAME = "openai/gpt-oss-120b" 
 
 st.set_page_config(layout="wide", page_title="UBCK")
-st.title("🤖UBCK-GPT")
 
-api_key = st.secrets["GROQ_API_KEY"]
-client = Groq(api_key=api_key)
+# api_key = st.secrets["GROQ_API_KEY"]
+# client = Groq(api_key=api_key)
 
 # ===== 탭 생성 =====
-tab1, tab2, tab3 = st.tabs(["📋 변환기", "🗺️ 조사 경로 지도", "👥 조 편성"])
+tab2, tab3 = st.tabs(["🗺️ 조사 경로 지도", "👥 조 편성"])
 
-# ===== 탭 1: 기존 AI 변환기 =====
-with tab1:
-    col1, col2 = st.columns(2)
+# # ===== 탭 1: 기존 AI 변환기 =====
+# with tab1:
+#     col1, col2 = st.columns(2)
 
-    with col1:
-        st.subheader("📋 야장정리기 결과를 그대로 복사/붙여넣기하세요.")
-        user_input = st.text_area("엑셀에서 복사/붙여넣기한 텍스트", height=400)
-        run_button = st.button("변환 실행 ▶", use_container_width=True)
+#     with col1:
+#         st.subheader("📋 야장정리기 결과를 그대로 복사/붙여넣기하세요.")
+#         user_input = st.text_area("엑셀에서 복사/붙여넣기한 텍스트", height=400)
+#         run_button = st.button("변환 실행 ▶", use_container_width=True)
 
-    with col2:
-        st.subheader("✨ 관찰종 및 개체수")
-        result_container = st.empty()
+#     with col2:
+#         st.subheader("✨ 관찰종 및 개체수")
+#         result_container = st.empty()
         
-        if run_button and user_input:
-            try:
-                with st.spinner("AI가 변환 중입니다..."):
-                    chat_completion = client.chat.completions.create(
-                        messages=[
-                            # 1. 시스템 프롬프트: AI의 역할과 규칙 정의 (여기를 튜닝하세요)
-                            {
-                                "role": "system",
-                                "content": """
-                                당신은 “조류상 조사 결과 포맷터”이다.
+#         if run_button and user_input:
+#             try:
+#                 with st.spinner("AI가 변환 중입니다..."):
+#                     chat_completion = client.chat.completions.create(
+#                         messages=[
+#                             # 1. 시스템 프롬프트: AI의 역할과 규칙 정의 (여기를 튜닝하세요)
+#                             {
+#                                 "role": "system",
+#                                 "content": """
+#                                 당신은 “조류상 조사 결과 포맷터”이다.
 
-                                입력은 엑셀에서 복사-붙여넣기한 텍스트이며, 각 행은 2열로 구성된다:
-                                - 1열: 조류 국명(한글)
-                                - 2열: 관찰 수(숫자 형태의 문자열)
-                                열 구분은 탭(Tab)일 수 있고, 행 구분은 줄바꿈이다.
+#                                 입력은 엑셀에서 복사-붙여넣기한 텍스트이며, 각 행은 2열로 구성된다:
+#                                 - 1열: 조류 국명(한글)
+#                                 - 2열: 관찰 수(숫자 형태의 문자열)
+#                                 열 구분은 탭(Tab)일 수 있고, 행 구분은 줄바꿈이다.
 
-                                작업:
-                                - 입력의 각 행을 위에서 아래 순서대로 처리한다.
-                                - 각 행을 다음 형식의 조각으로 변환한다: {국명} <{관찰수}>
-                                - 모든 조각을 ", " (콤마+공백)으로 연결하여 한 줄의 텍스트로 출력한다.
+#                                 작업:
+#                                 - 입력의 각 행을 위에서 아래 순서대로 처리한다.
+#                                 - 각 행을 다음 형식의 조각으로 변환한다: {국명} <{관찰수}>
+#                                 - 모든 조각을 ", " (콤마+공백)으로 연결하여 한 줄의 텍스트로 출력한다.
 
-                                절대 규칙(매우 중요):
-                                - 출력은 오직 최종 결과 한 줄만 출력한다.
-                                - 설명, 인사, 머리말/꼬리말, 코드블록, 따옴표, 불릿, 추가 문장, 줄바꿈을 절대 포함하지 않는다.
-                                - 입력값의 진위/타당성 검증(국명 확인, 개체 수 검증 등)을 하지 않는다. 입력에 있는 문자열을 그대로 사용한다.
-                                - 순서를 절대 바꾸지 않는다.
-                                - 괄호/기호는 다음만 사용한다: 각 항목의 수를 감싸는 "<"와 ">".
-                                """
-                            },
+#                                 절대 규칙(매우 중요):
+#                                 - 출력은 오직 최종 결과 한 줄만 출력한다.
+#                                 - 설명, 인사, 머리말/꼬리말, 코드블록, 따옴표, 불릿, 추가 문장, 줄바꿈을 절대 포함하지 않는다.
+#                                 - 입력값의 진위/타당성 검증(국명 확인, 개체 수 검증 등)을 하지 않는다. 입력에 있는 문자열을 그대로 사용한다.
+#                                 - 순서를 절대 바꾸지 않는다.
+#                                 - 괄호/기호는 다음만 사용한다: 각 항목의 수를 감싸는 "<"와 ">".
+#                                 """
+#                             },
                             
-                            # 2. 사용자 입력
-                            {
-                                "role": "user", 
-                                "content": user_input
-                            }
-                        ],
-                        model=MODEL_NAME,
-                        temperature=0.1 
-                    )
-                    result_text = chat_completion.choices[0].message.content
-                    result_container.text_area("결과물", value=result_text, height=400)
-                    st.success("완료!")
-            except Exception as e:
-                st.error(f"오류 발생: {e}")
+#                             # 2. 사용자 입력
+#                             {
+#                                 "role": "user", 
+#                                 "content": user_input
+#                             }
+#                         ],
+#                         model=MODEL_NAME,
+#                         temperature=0.1 
+#                     )
+#                     result_text = chat_completion.choices[0].message.content
+#                     result_container.text_area("결과물", value=result_text, height=400)
+#                     st.success("완료!")
+#             except Exception as e:
+#                 st.error(f"오류 발생: {e}")
 
 # ===== 탭 2: 지도 시각화 =====
 with tab2:
@@ -713,3 +712,8 @@ with tab3:
                 file_name="조편성_카메라분배.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+
+# 조 짜는 UI 자체를 만들기
+# 과거 조 기록을 기반으로, 같은 조에 연속으로 들어가지 않도록 하는 기능 추가하기
+# -> 예비조사 본조사 등등 날짜마다 탭을 만들기
+# 과거에 조사자/섹장 했던 사람은 횟수를 띄워줘서 조절할 수 있게 하기
