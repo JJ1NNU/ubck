@@ -166,6 +166,25 @@ with tab2:
             sector_color_map[key] = get_color_for_sector(key, ordered)  # 기존 함수 그대로 사용
 
         return sector_color_map
+    
+    def make_label_html(text, color, font_size_pt=12, bold=True):
+        fw = "700" if bold else "500"
+        return f"""
+        <div style="
+            white-space: nowrap;
+            display: inline-block;
+            writing-mode: horizontal-tb;
+            font-size: {font_size_pt}pt;
+            font-weight: {fw};
+            color: {color};
+            background: rgba(255,255,255,0.75);
+            padding: 2px 6px;
+            border: 1px solid rgba(0,0,0,0.25);
+            border-radius: 6px;
+            text-shadow: -1px -1px 0 white, 1px -1px 0 white,
+                        -1px  1px 0 white, 1px  1px 0 white;
+        ">{text}</div>
+        """
 
     def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None, label_text=None):
         if geom is None:
@@ -188,13 +207,11 @@ with tab2:
             if label_text:
                 folium.Marker(
                     location=[pt.y, pt.x],
-                    icon=folium.DivIcon(html=f"""
-                        <div style="font-size: 10pt; color: {color}; font-weight: bold;
-                            text-shadow: -1px -1px 0 white, 1px -1px 0 white,
-                                        -1px 1px 0 white, 1px 1px 0 white;">
-                            {label_text}
-                        </div>
-                    """)
+                    icon=folium.DivIcon(
+                        html=make_label_html(label_text, color, font_size_pt=9, bold=False),
+                        icon_size=(320, 18),
+                        icon_anchor=(0, 0)
+                    )
                 ).add_to(m)
 
         gtype = getattr(geom, "geom_type", "")
@@ -323,13 +340,11 @@ with tab2:
                             centroid = row['geometry'].centroid
                             folium.Marker(
                                 location=[centroid.y, centroid.x],
-                                icon=folium.DivIcon(html=f"""
-                                    <div style="font-size: 12pt; color: {color}; font-weight: bold;
-                                        text-shadow: -1px -1px 0 white, 1px -1px 0 white,
-                                                    -1px 1px 0 white, 1px 1px 0 white;">
-                                        {display_name}
-                                    </div>
-                                """)
+                                icon=folium.DivIcon(
+                                    html=make_label_html(display_name, color, font_size_pt=12, bold=True),
+                                    icon_size=(300, 24),     # 충분히 넓게
+                                    icon_anchor=(0, 0)
+                                )
                             ).add_to(m)
 
                     
@@ -345,11 +360,11 @@ with tab2:
                                 folium.GeoJson(
                                     row['geometry'],
                                     style_function=lambda x, color=fixed_color: {
-                                        'fillColor': color,
                                         'color': color,
                                         'weight': 2,
-                                        'fillOpacity': 0.3,
-                                        'opacity': 0.8
+                                        'opacity': 0.9,
+                                        'fillColor': 'transparent',
+                                        'fillOpacity': 0.0
                                     },
                                     tooltip=f"{layer_config['layer_name']} - {sector_name}"
                                 ).add_to(m)
@@ -358,13 +373,11 @@ with tab2:
                                 centroid = row['geometry'].centroid
                                 folium.Marker(
                                     location=[centroid.y, centroid.x],
-                                    icon=folium.DivIcon(html=f"""
-                                        <div style="font-size: 10pt; color: {fixed_color}; font-weight: bold; 
-                                            text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
-                                            -1px 1px 0 white, 1px 1px 0 white;">
-                                            [{sector_name}]
-                                        </div>
-                                    """)
+                                    icon=folium.DivIcon(
+                                        html=make_label_html(display_name, color, font_size_pt=12, bold=True),
+                                        icon_size=(300, 24),     # 충분히 넓게
+                                        icon_anchor=(0, 0)
+                                    )
                                 ).add_to(m)
                         
                         else:
@@ -387,13 +400,11 @@ with tab2:
                                 centroid = row['geometry'].centroid
                                 folium.Marker(
                                     location=[centroid.y, centroid.x],
-                                    icon=folium.DivIcon(html=f"""
-                                        <div style="font-size: 10pt; color: {color}; font-weight: bold; 
-                                            text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
-                                            -1px 1px 0 white, 1px 1px 0 white;">
-                                            [{sector_key}]
-                                        </div>
-                                    """)
+                                    icon=folium.DivIcon(
+                                        html=make_label_html(display_name, color, font_size_pt=12, bold=True),
+                                        icon_size=(300, 24),     # 충분히 넓게
+                                        icon_anchor=(0, 0)
+                                    )
                                 ).add_to(m)
                     
                     elif layer_type == "point":
