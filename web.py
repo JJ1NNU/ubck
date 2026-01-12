@@ -633,22 +633,23 @@ def format_teams_with_camera_mark(teams, camera_set):
 
 
 with tab3:
-    st.subheader("👥 조 편성 (카메라 균등 분배)")
-    st.info("💡 콤마(,) 또는 줄바꿈(Enter)으로 이름을 구분합니다. 카메라 보유자는 자동으로 균등하게 분산됩니다.")
+    st.subheader("👥 조 편성")
+    st.info("💡 줄바꿈(Enter) 또는 콤마(,)로 이름을 구분합니다. 카메라 보유자는 자동으로 균등하게 분산됩니다.\n조사자/섹장 후보 중 선정되지 않은 인원은 자동으로 쩌리로 편입됩니다.")
 
     k = st.number_input("조 개수", min_value=1, value=3, step=1)
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        investigators_raw = st.text_area("조사자 후보", height=200, placeholder="김조사\n이조사")
+        investigators_raw = st.text_area("조사자 후보", height=200, placeholder="Enter 혹은 , 로 구분")
     with c2:
-        leaders_raw = st.text_area("섹장 후보", height=200, placeholder="박섹장, 최섹장")
+        leaders_raw = st.text_area("섹장 후보", height=200, placeholder="Enter 혹은 , 로 구분")
     with c3:
-        cameras_raw = st.text_area("📸 카메라 보유자", height=200, placeholder="여기 적힌 사람은\n가능한 조별로 찢어집니다.", help="역할(조사/섹장/쩌리)과 상관없이 카메라 가진 사람 이름을 적으세요.")
+        extras_raw = st.text_area("쩌리 후보", height=200, placeholder="Enter 혹은 , 로 구분")
     with c4:
-        extras_raw = st.text_area("쩌리 후보", height=200, placeholder="나머지 인원\n(비워둬도 됨)")
+        cameras_raw = st.text_area("📸 카메라 보유자", height=200, placeholder="여기 적힌 사람은\n가능한 조별로 찢어집니다.", help="역할(조사/섹장/쩌리)과 상관없이 카메라 가진 사람 이름을 모두 적으세요.")
 
-    with st.expander("🚫 제약 조건 (같이/따로)"):
+
+    with st.expander("🚫 (선택) 제약 조건 (같이/따로)"):
         st.caption("이름 사이에 하이픈(-)을 넣어 쌍을 만드세요. 여러 쌍은 콤마나 줄바꿈으로 구분.")
         c_a, c_b = st.columns(2)
         with c_a:
