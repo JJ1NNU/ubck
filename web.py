@@ -10,6 +10,7 @@ from folium import Icon, Marker
 import time
 import pandas as pd
 import io
+import re
 
 MODEL_NAME = "openai/gpt-oss-120b" 
 
@@ -460,203 +461,238 @@ with tab2:
 
 
 # ===== 탭 3: 조 편성 =====
-def parse_names(raw: str, delim: str):
-    if delim == "\\n":
-        parts = raw.splitlines()
-    else:
-        parts = raw.split(delim)
+def parse_names_auto(raw: str):
+    """콤마(,) 또는 줄바꿈(\n)으로 이름을 분리하고 빈 값 제거"""
+    if not raw:
+        return []
+    # 정규식: , 또는 \n (공백 포함 가능)
+    parts = re.split(r'[,\n]+', raw)
     return [p.strip() for p in parts if p.strip()]
 
-def parse_pairs(raw: str, pair_delim: str):
+def parse_pairs_auto(raw: str):
+    """
+    여러 줄 또는 콤마로 쌍들을 분리한 뒤,
+    각 쌍 내부를 '-'로 분리 (예: A-B, C-D)
+    """
+    if not raw:
+        return []
+    
     pairs = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
+    # 1차 분리: 줄바꿈 or 콤마로 덩어리 나누기
+    chunks = re.split(r'[,\n]+', raw)
+    
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk or '-' not in chunk:
             continue
-        if pair_delim not in line:
-            continue
-        a, b = [x.strip() for x in line.split(pair_delim, 1)]
-        if a and b:
-            pairs.append((a, b))
+        
+        # 2차 분리: '-' 기준으로 2개로 나눔
+        parts = chunk.split('-', 1)
+        if len(parts) == 2:
+            a, b = parts[0].strip(), parts[1].strip()
+            if a and b:
+                pairs.append((a, b))
     return pairs
 
-def check_constraints(teams, must_together, must_apart):
-    person_to_team = {}
-    for i, t in enumerate(teams):
-        members = [t["조사자"], t["섹장"]] + t["쩌리"]
-        for m in members:
-            person_to_team[m] = i
-
-    for a, b in must_together:
-        if a not in person_to_team or b not in person_to_team:
-            return False, f"같이 팀 제약에 존재하지 않는 이름이 있습니다: {a}, {b}"
-        if person_to_team[a] != person_to_team[b]:
-            return False, f"같이 팀 제약 위반: {a}, {b}"
-
-    for a, b in must_apart:
-        if a not in person_to_team or b not in person_to_team:
-            return False, f"다른 팀 제약에 존재하지 않는 이름이 있습니다: {a}, {b}"
-        if person_to_team[a] == person_to_team[b]:
-            return False, f"다른 팀 제약 위반: {a}, {b}"
-
-    return True, ""
-
-def try_make_teams(k, investigators, leaders, extras, must_together, must_apart, max_tries=2000):
+def try_make_teams_with_camera(k, investigators, leaders, cameras, extras, must_together, must_apart, max_tries=3000):
+    # 명단 복사
     investigators = investigators[:]
     leaders = leaders[:]
+    cameras = cameras[:]  # 카메라 보유자
     extras = extras[:]
 
-    all_names = investigators + leaders + extras
-    if len(set(all_names)) != len(all_names):
-        return None, "후보 명단(조사자/섹장/쩌리)에 중복 이름이 있습니다. 중복을 제거해 주세요."
+    # 전체 이름 집합 (중복 체크용)
+    all_names = investigators + leaders + cameras + extras
+    # 카메라 보유자는 역할이 아니라 '특성'이므로, 역할(조사자/섹장/쩌리)과 중복될 수 있음 -> 여기서는 '카메라 명단'을 따로 입력받지만, 실제로는 역할군 중 하나일 것임.
+    # 하지만 사용 편의상 "카메라 보유자 칸"에 쓴 사람은 우선적으로 카메라 마크를 달아줘야 함.
+    # 로직: 카메라 명단에 있는 사람은, 역할 배정 시 'has_camera=True' 속성을 가짐.
+    
+    # 중복 체크 (역할군 간에는 중복 없어야 함. 단, 카메라 명단은 역할군과 겹칠 수 있음 -> 입력란 분리했으므로 역할군 간 중복만 체크)
+    # 카메라 명단에 있는 사람이 역할군(조사/섹장/쩌리) 어디에도 없으면 -> 자동으로 쩌리로 편입? or 에러?
+    # -> 편의상 "역할군 어디에도 없으면 쩌리로 추가" 처리
+    
+    role_union = set(investigators) | set(leaders) | set(extras)
+    for cam in cameras:
+        if cam not in role_union:
+            extras.append(cam) # 역할 없으면 쩌리로
+    
+    # 다시 중복 체크
+    role_all = investigators + leaders + extras
+    if len(set(role_all)) != len(role_all):
+        return None, "역할(조사자/섹장/쩌리) 명단 간에 중복된 이름이 있습니다. 한 명은 하나의 역할만 가능합니다."
 
     if len(investigators) < k:
-        return None, f"조사자 후보가 부족합니다. 필요: {k}, 현재: {len(investigators)}"
+        return None, f"조사자 후보 부족 (필요 {k}, 현재 {len(investigators)})"
     if len(leaders) < k:
-        return None, f"섹장 후보가 부족합니다. 필요: {k}, 현재: {len(leaders)}"
+        return None, f"섹장 후보 부족 (필요 {k}, 현재 {len(leaders)})"
+
+    camera_set = set(cameras)
 
     for _ in range(max_tries):
         random.shuffle(investigators)
         random.shuffle(leaders)
         random.shuffle(extras)
 
-        teams = [{"조사자": None, "섹장": None, "쩌리": []} for _ in range(k)]
-
-        # 1) 조사자 배정
+        teams = [{"members": [], "camera_count": 0} for _ in range(k)]
+        
+        # 1. 조사자 배정
         inv_pick = investigators[:k]
-        inv_leftover = investigators[k:]
+        inv_left = investigators[k:]
         for i in range(k):
-            teams[i]["조사자"] = inv_pick[i]
-
-        # 2) 섹장 배정
-        used = set(inv_pick)
-        lead_pool = [x for x in leaders if x not in used]
-        if len(lead_pool) < k:
-            continue
+            name = inv_pick[i]
+            teams[i]["members"].append({"role": "조사자", "name": name, "has_cam": name in camera_set})
+        
+        # 2. 섹장 배정
+        # (조사자로 뽑힌 사람 제외)
+        used_names = set(inv_pick)
+        lead_pool = [x for x in leaders if x not in used_names]
+        if len(lead_pool) < k: continue
+        
         random.shuffle(lead_pool)
         lead_pick = lead_pool[:k]
-        lead_leftover = [x for x in leaders if x not in lead_pick and x not in used]
+        lead_left = [x for x in leaders if x not in lead_pick and x not in used_names]
+        
         for i in range(k):
-            teams[i]["섹장"] = lead_pick[i]
+            name = lead_pick[i]
+            teams[i]["members"].append({"role": "섹장", "name": name, "has_cam": name in camera_set})
 
-        # 3) 쩌리
-        all_extras = extras + inv_leftover + lead_leftover
+        # 3. 쩌리 배정
+        # 남은 인원 (원래 쩌리 + 탈락자들)
+        all_extras = extras + inv_left + lead_left
         random.shuffle(all_extras)
         
-        for idx, name in enumerate(all_extras):
-            teams[idx % k]["쩌리"].append(name)
+        # **카메라 균등 분배를 위한 쩌리 배정 전략**
+        # 쩌리 중 카메라 있는 사람 / 없는 사람 분리
+        extra_cams = [x for x in all_extras if x in camera_set]
+        extra_no_cams = [x for x in all_extras if x not in camera_set]
+        
+        # 현재 각 팀 카메라 수 계산
+        for t in teams:
+            t["camera_count"] = sum(1 for m in t["members"] if m["has_cam"])
+            
+        # 쩌리(카메라O) 부터, 카메라 적은 팀에 우선 배정
+        for cam_person in extra_cams:
+            # 카메라 수가 가장 적은 팀 찾기
+            teams.sort(key=lambda t: t["camera_count"])
+            target_team = teams[0] # 제일 적은 팀
+            target_team["members"].append({"role": "쩌리", "name": cam_person, "has_cam": True})
+            target_team["camera_count"] += 1
+            
+        # 쩌리(카메라X) 배정 (인원수 균형 맞추기 위해, 현재 인원 적은 팀 순?)
+        # 보통은 그냥 순서대로 넣거나 랜덤. 여기서는 순서대로 넣되 인원수 균형 고려
+        for no_cam_person in extra_no_cams:
+            teams.sort(key=lambda t: len(t["members"])) # 인원 적은 순
+            teams[0]["members"].append({"role": "쩌리", "name": no_cam_person, "has_cam": False})
 
-        ok, reason = check_constraints(teams, must_together, must_apart)
+        # 4. 제약조건 검사 (같이/따로)
+        # 데이터 구조 변환: teams -> 기존 constraints 함수가 쓸 수 있는 형태(dict)로 변환 필요?
+        # 기존 constraints 함수는 {"조사자":..., "섹장":..., "쩌리":[]} 형태를 원함.
+        # 맞춰서 변환해줌.
+        formatted_teams = []
+        for t in teams:
+            ft = {"조사자": None, "섹장": None, "쩌리": []}
+            for m in t["members"]:
+                if m["role"] == "조사자": ft["조사자"] = m["name"]
+                elif m["role"] == "섹장": ft["섹장"] = m["name"]
+                else: ft["쩌리"].append(m["name"])
+            formatted_teams.append(ft)
+            
+        ok, reason = check_constraints(formatted_teams, must_together, must_apart)
         if ok:
-            return teams, ""
+            # 성공 시, 카메라 표시(📷) 붙여서 반환할 데이터 정리
+            return formatted_teams, camera_set, ""
 
-    return None, f"조건을 만족하는 조합을 찾지 못했습니다. (재시도 {max_tries}회)"
+    return None, None, f"조건을 만족하는 조합을 찾지 못했습니다. (재시도 {max_tries}회)"
 
-def format_teams_horizontal_table(teams):
-    """
-    각 열이 한 조가 되도록 행/렬 변경.
-    쩌리가 여러 명이면 각 칸에 한 명씩.
-    """
-    # 쩌리의 최대 명수 구하기
+
+def format_teams_with_camera_mark(teams, camera_set):
+    """표시용 데이터프레임 생성 (카메라 📷 표시)"""
     max_jjuri = max((len(t["쩌리"]) for t in teams), default=0)
     
-    # 행 구성: 역할별 (조사자, 섹장, 쩌리 1, 쩌리 2, ...)
-    rows_data = []
-    
-    # 1행: 조사자
-    row_investigator = ["조사자"] + [t["조사자"] for t in teams]
-    rows_data.append(row_investigator)
-    
-    # 2행: 섹장
-    row_leader = ["섹장"] + [t["섹장"] for t in teams]
-    rows_data.append(row_leader)
-    
-    # 3행~: 쩌리 (한 행에 한 명씩)
-    for jjuri_idx in range(max_jjuri):
-        row_jjuri = [f"쩌리{jjuri_idx + 1}"]
-        for t in teams:
-            if jjuri_idx < len(t["쩌리"]):
-                row_jjuri.append(t["쩌리"][jjuri_idx])
-            else:
-                row_jjuri.append("")  # 빈 칸
-        rows_data.append(row_jjuri)
-    
-    # 컬럼명: 조역할, 1조, 2조, ...
-    columns = ["역할"] + [f"{i}조" for i in range(1, len(teams) + 1)]
-    
-    df = pd.DataFrame(rows_data, columns=columns)
-    return df
+    def mark(name):
+        return f"{name} 📷" if name in camera_set else name
 
-def create_excel_buffer(df):
-    """DataFrame을 메모리상 Excel 파일로 변환"""
-    buffer = io.BytesIO()
-    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='조편성', index=False)
-    buffer.seek(0)
-    return buffer
+    rows = []
+    
+    # 조사자
+    rows.append(["조사자"] + [mark(t["조사자"]) for t in teams])
+    # 섹장
+    rows.append(["섹장"] + [mark(t["섹장"]) for t in teams])
+    # 쩌리들
+    for i in range(max_jjuri):
+        row = [f"쩌리{i+1}"]
+        for t in teams:
+            if i < len(t["쩌리"]):
+                row.append(mark(t["쩌리"][i]))
+            else:
+                row.append("")
+        rows.append(row)
+        
+    cols = ["역할"] + [f"{i+1}조" for i in range(len(teams))]
+    return pd.DataFrame(rows, columns=cols)
+
 
 with tab3:
-    st.subheader("👥 조 편성 (조사자/섹장/쩌리)")
-    st.info("💡 조사자/섹장 후보 중 선정되지 않은 인원은 자동으로 쩌리로 편입됩니다.")
+    st.subheader("👥 조 편성 (카메라 균등 분배)")
+    st.info("💡 콤마(,) 또는 줄바꿈(Enter)으로 이름을 구분합니다. 카메라 보유자는 자동으로 균등하게 분산됩니다.")
 
     k = st.number_input("조 개수", min_value=1, value=3, step=1)
 
-    delim = st.text_input("이름 구분자 (예: ,  또는  \\n)", value="\\n")
-
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        investigators_raw = st.text_area("조사자 후보 (이름들)", height=180, placeholder="한 줄에 한 명 또는 ,로 구분")
+        investigators_raw = st.text_area("조사자 후보", height=200, placeholder="김조사\n이조사")
     with c2:
-        leaders_raw = st.text_area("섹장 후보 (이름들)", height=180)
+        leaders_raw = st.text_area("섹장 후보", height=200, placeholder="박섹장, 최섹장")
     with c3:
-        extras_raw = st.text_area("쩌리 후보 (이름들)", height=180, help="여기는 비워둬도 됩니다. 조사자/섹장 탈락자가 자동으로 쩌리가 됩니다.")
+        cameras_raw = st.text_area("📸 카메라 보유자", height=200, placeholder="여기 적힌 사람은\n가능한 조별로 찢어집니다.", help="역할(조사/섹장/쩌리)과 상관없이 카메라 가진 사람 이름을 적으세요.")
+    with c4:
+        extras_raw = st.text_area("쩌리 후보", height=200, placeholder="나머지 인원\n(비워둬도 됨)")
 
-    st.markdown("### 제약조건(선택)")
-    pair_delim = st.text_input("같이/다른 팀 '쌍' 구분자", value="-")
-    must_together_raw = st.text_area("꼭 같은 팀 (여러 쌍 가능: 구분자가 - 라면 한 줄에 A-B)", height=120)
-    must_apart_raw = st.text_area("꼭 다른 팀 (여러 쌍 가능: 구분자가 - 라면 한 줄에 A-B)", height=120)
+    with st.expander("🚫 제약 조건 (같이/따로)"):
+        st.caption("이름 사이에 하이픈(-)을 넣어 쌍을 만드세요. 여러 쌍은 콤마나 줄바꿈으로 구분.")
+        c_a, c_b = st.columns(2)
+        with c_a:
+            must_together_raw = st.text_area("꼭 같은 팀", placeholder="철수-영희\n민수-지수", height=100)
+        with c_b:
+            must_apart_raw = st.text_area("꼭 다른 팀", placeholder="사자-호랑이", height=100)
 
-    run_team = st.button("조 편성 생성(랜덤) 🎲", use_container_width=True)
+    run_team = st.button("조 편성 실행 🎲", use_container_width=True)
 
     if run_team:
-        investigators = parse_names(investigators_raw, delim)
-        leaders = parse_names(leaders_raw, delim)
-        extras = parse_names(extras_raw, delim)
+        # 자동 파싱
+        investigators = parse_names_auto(investigators_raw)
+        leaders = parse_names_auto(leaders_raw)
+        cameras = parse_names_auto(cameras_raw)
+        extras = parse_names_auto(extras_raw)
 
-        must_together = parse_pairs(must_together_raw, pair_delim)
-        must_apart = parse_pairs(must_apart_raw, pair_delim)
+        must_together = parse_pairs_auto(must_together_raw)
+        must_apart = parse_pairs_auto(must_apart_raw)
 
-        teams, err = try_make_teams(
+        # 조 편성 로직 실행
+        teams_data, cam_set, err = try_make_teams_with_camera(
             k=int(k),
             investigators=investigators,
             leaders=leaders,
+            cameras=cameras,
             extras=extras,
             must_together=must_together,
-            must_apart=must_apart,
-            max_tries=3000
+            must_apart=must_apart
         )
 
         if err:
             st.error(err)
         else:
-            df = format_teams_horizontal_table(teams)
+            st.success("조 편성이 완료되었습니다! (📷 표시는 카메라 보유자)")
             
-            # 표 형식으로 표시
-            st.dataframe(df, use_container_width=True, hide_index=True)
-            
-            # Excel 다운로드 버튼
-            excel_buffer = create_excel_buffer(df)
+            # 결과 표시
+            df_display = format_teams_with_camera_mark(teams_data, cam_set)
+            st.dataframe(df_display, use_container_width=True, hide_index=True)
+
+            # 다운로드
+            excel_buffer = create_excel_buffer(df_display)
             st.download_button(
-                label="📥 Excel 파일 다운로드 (.xlsx)",
+                label="📥 결과 엑셀 다운로드",
                 data=excel_buffer,
-                file_name="조편성_결과.xlsx",
+                file_name="조편성_카메라분배.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-            
-            # 복사/붙여넣기용 탭 형식 텍스트
-            st.markdown("### 복사/붙여넣기 (엑셀용)")
-            st.info("아래 텍스트를 Ctrl+C로 복사 후 엑셀에 바로 붙여넣기 가능합니다.")
-            
-            # DataFrame을 탭 구분 텍스트로 변환
-            tsv_text = df.to_csv(sep='\t', index=False)
-            st.text_area("", value=tsv_text, height=150, disabled=True)
