@@ -226,10 +226,6 @@ with tab2:
     # 각 메인 탭 처리
     for tab_idx, (subtab, tab_config) in enumerate(zip(subtabs, tab_configs)):
         with subtab:
-            zoom_state_key = f"map_zoom_{tab_idx}"
-            if zoom_state_key not in st.session_state:
-                st.session_state[zoom_state_key] = zoom 
-            
             # 폴리곤 on/off 토글
             show_polygon = st.checkbox(f"{tab_config['name']} 폴리곤 표시", value=True, key=f"polygon_toggle_{tab_idx}")
             
@@ -272,10 +268,14 @@ with tab2:
                     center_lon = default_center_lon
                     zoom = 13
                 
+                zoom_state_key = f"map_zoom_{tab_idx}"
+                if zoom_state_key not in st.session_state:
+                    st.session_state[zoom_state_key] = zoom 
+
                 # Folium 지도 생성
                 m = folium.Map(
                     location=[center_lat, center_lon],
-                    zoom_start=zoom,
+                    zoom_start=st.session_state[zoom_state_key],
                     tiles=None
                 )
                 
