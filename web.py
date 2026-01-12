@@ -106,7 +106,7 @@ with tab2:
         "name": "하구",
         "files": [
             {"path": "data/HaguLine.shp", "type": "line", "layer_name": "하구 라인", "sector_col": "sector"},
-            {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤", "sector_col": "code"},  # ← code로 변경
+            {"path": "data/HaguPolygon.shp", "type": "polygon", "layer_name": "하구 폴리곤", "sector_col": "sector"},
             {"path": "data/HaguPoint.shp", "type": "point", "layer_name": "하구 포인트", "sector_col": "sector"}
         ]
     }
@@ -120,16 +120,58 @@ with tab2:
             return colors[idx % len(colors)]
         except:
             return 'blue'
+        
+    def normalize_sector_value(tab_name: str, sector_value: str):
+        """색상/표시 통일을 위한 sector 정규화."""
+        if sector_value is None:
+            return None
+        s = str(sector_value).strip()
 
-    def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None):
+        # 하천 라인의 하천6-1, 하천6-2를 하천6으로 통일
+        if tab_name == "하천" and s.startswith("하천6-"):
+            return "하천6"
+
+        return s
+
+    def build_sector_color_map(tab_name: str, gdfs: dict):
+        """
+        탭(하천/하구) 단위로 sector->color 매핑을 1회 생성.
+        - 하구 polygon은 색 고정이므로, 매핑에는 굳이 포함하지 않아도 됨(포함해도 무방).
+        """
+        seen = set()
+        ordered = []
+
+        # line -> polygon -> point 순서로 “처음 등장한 sector”를 수집
+        for lt in ["line", "polygon", "point"]:
+            if lt not in gdfs:
+                continue
+            gdf = gdfs[lt]["gdf"]
+
+            if "sector" not in gdf.columns:
+                continue
+
+            for v in gdf["sector"].tolist():
+                key = normalize_sector_value(tab_name, v)
+                if key is None:
+                    continue
+                if key not in seen:
+                    seen.add(key)
+                    ordered.append(key)
+
+        # colors는 기존 그대로 사용
+        sector_color_map = {}
+        for i, key in enumerate(ordered):
+            sector_color_map[key] = get_color_for_sector(key, ordered)  # 기존 함수 그대로 사용
+
+        return sector_color_map
+
+    def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None, label_text=None):
         if geom is None:
             return
 
-        gtype = getattr(geom, "geom_type", "")
-
-        if gtype == "Point":
+        def _add_one_point(pt):
             folium.CircleMarker(
-                location=[geom.y, geom.x],
+                location=[pt.y, pt.x],
                 radius=7,
                 color=color,
                 weight=3,
@@ -140,22 +182,31 @@ with tab2:
                 tooltip=tooltip_text,
             ).add_to(m)
 
+            # 지도 위 텍스트 라벨(시작/종료 + location) [web:165]
+            if label_text:
+                folium.Marker(
+                    location=[pt.y, pt.x],
+                    icon=folium.DivIcon(html=f"""
+                        <div style="font-size: 10pt; color: {color}; font-weight: bold;
+                            text-shadow: -1px -1px 0 white, 1px -1px 0 white,
+                                        -1px 1px 0 white, 1px 1px 0 white;">
+                            {label_text}
+                        </div>
+                    """)
+                ).add_to(m)
+
+        gtype = getattr(geom, "geom_type", "")
+
+        if gtype == "Point":
+            _add_one_point(geom)
+
         elif gtype == "MultiPoint":
             for p in geom.geoms:
-                folium.CircleMarker(
-                    location=[p.y, p.x],
-                    radius=7,
-                    color=color,
-                    weight=3,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.9,
-                    popup=popup_text,
-                    tooltip=tooltip_text,
-                ).add_to(m)
+                _add_one_point(p)
 
         else:
             folium.GeoJson(geom).add_to(m)
+
 
     # 각 메인 탭 처리
     for tab_idx, (subtab, tab_config) in enumerate(zip(subtabs, tab_configs)):
@@ -175,6 +226,8 @@ with tab2:
                     gdfs[file_config["type"]] = {"gdf": gdf, "config": file_config}
                     all_bounds.append(gdf.total_bounds)
                 
+                sector_color_map = build_sector_color_map(tab_config["name"], gdfs)
+
                 # 전체 영역의 중심점 계산
                 if all_bounds:
                     min_x = min(b[0] for b in all_bounds)
@@ -230,27 +283,22 @@ with tab2:
                     layer_config = gdfs[layer_type]["config"]
                     
                     # Sector 컬럼 찾기
-                    sector_col = layer_config.get("sector_col", "sector")
-                    
-                    if sector_col not in gdf.columns:
-                        for col in gdf.columns:
-                            if col.lower() == sector_col.lower():
-                                sector_col = col
-                                break
-                        else:
-                            sector_col = None
-
-                    if sector_col:
-                        unique_sectors = gdf[sector_col].unique()
-                    else:
-                        unique_sectors = ['default']
+                    sector_col = "sector"
                                         
                     # 레이어별 처리
                     if layer_type == "line":
                         for idx_row, row in gdf.iterrows():
-                            sector_name = row[sector_col] if sector_col else "구역 정보 없음"
-                            color = get_color_for_sector(sector_name, unique_sectors)
-                            
+                            # 색상 키(정규화 sector)
+                            raw_sector = row[sector_col] if sector_col else None
+                            sector_key = normalize_sector_value(tab_config["name"], raw_sector)
+                            color = sector_color_map.get(sector_key, "blue")
+
+                            # 표시용 이름(하구 라인은 name, 하천 라인은 sector_key)
+                            if tab_config["name"] == "하구" and "name" in gdf.columns and pd.notna(row.get("name")):
+                                display_name = str(row["name"])
+                            else:
+                                display_name = sector_key if sector_key else "구역 정보 없음"
+
                             folium.GeoJson(
                                 row['geometry'],
                                 style_function=lambda x, color=color: {
@@ -258,21 +306,21 @@ with tab2:
                                     'weight': 4,
                                     'opacity': 0.8
                                 },
-                                tooltip=f"{layer_config['layer_name']} - {sector_name}"
+                                tooltip=f"{layer_config['layer_name']} - {display_name}"
                             ).add_to(m)
-                            
-                            # 라인 중심에 구역명 표시
+
                             centroid = row['geometry'].centroid
                             folium.Marker(
                                 location=[centroid.y, centroid.x],
                                 icon=folium.DivIcon(html=f"""
-                                    <div style="font-size: 12pt; color: {color}; font-weight: bold; 
-                                         text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
-                                         -1px 1px 0 white, 1px 1px 0 white;">
-                                        {sector_name}
+                                    <div style="font-size: 12pt; color: {color}; font-weight: bold;
+                                        text-shadow: -1px -1px 0 white, 1px -1px 0 white,
+                                                    -1px 1px 0 white, 1px 1px 0 white;">
+                                        {display_name}
                                     </div>
                                 """)
                             ).add_to(m)
+
                     
                     # 기존 폴리곤 처리 부분을 아래로 교체
                     elif layer_type == "polygon":
@@ -310,8 +358,8 @@ with tab2:
                         
                         else:
                             for idx_row, row in gdf.iterrows():
-                                sector_name = row[sector_col] if sector_col else "구역 정보 없음"
-                                color = get_color_for_sector(sector_name, unique_sectors)
+                                sector_key = normalize_sector_value(tab_config["name"], row[sector_col] if sector_col else None)
+                                color = sector_color_map.get(sector_key, "blue")    
                                 
                                 folium.GeoJson(
                                     row['geometry'],
@@ -322,7 +370,7 @@ with tab2:
                                         'fillOpacity': 0.3,
                                         'opacity': 0.8
                                     },
-                                    tooltip=f"{layer_config['layer_name']} - {sector_name}"
+                                    tooltip=f"{layer_config['layer_name']} - {sector_key}"
                                 ).add_to(m)
                                 
                                 centroid = row['geometry'].centroid
@@ -332,23 +380,31 @@ with tab2:
                                         <div style="font-size: 10pt; color: {color}; font-weight: bold; 
                                             text-shadow: -1px -1px 0 white, 1px -1px 0 white, 
                                             -1px 1px 0 white, 1px 1px 0 white;">
-                                            [{sector_name}]
+                                            [{sector_key}]
                                         </div>
                                     """)
                                 ).add_to(m)
                     
                     elif layer_type == "point":
                         for _, row in gdf.iterrows():
-                            sector_name = row[sector_col] if sector_col else "포인트"
-                            color = get_color_for_sector(sector_name, unique_sectors)
-                            
+                            raw_sector = row[sector_col] if sector_col else None
+                            sector_key = normalize_sector_value(tab_config["name"], raw_sector)
+                            color = sector_color_map.get(sector_key, "blue")
+
+                            # 시작/종료 + 지점명 라벨
+                            se = str(row["startend"]).strip() if "startend" in gdf.columns and pd.notna(row["startend"]) else ""
+                            loc = str(row["location"]).strip() if "location" in gdf.columns and pd.notna(row["location"]) else ""
+                            label_text = f"{se}: {loc}" if se and loc else (loc if loc else None)
+
                             add_point_geometry_to_map(
                                 row["geometry"],
                                 m,
                                 color=color,
-                                popup_text=f"{layer_config['layer_name']} - {sector_name}",
-                                tooltip_text=f"{layer_config['layer_name']} - {sector_name}",
+                                popup_text=f"{layer_config['layer_name']} - {sector_key}",
+                                tooltip_text=f"{layer_config['layer_name']} - {sector_key}",
+                                label_text=label_text
                             )
+                            
                 
                 # 내 위치 마커
                 if location and location.get("latitude"):
