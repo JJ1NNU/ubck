@@ -8,6 +8,8 @@ from collections import defaultdict
 from streamlit_geolocation import streamlit_geolocation
 from folium import Icon, Marker
 import time
+import pandas as pd
+import io
 
 MODEL_NAME = "openai/gpt-oss-120b" 
 
@@ -448,11 +450,6 @@ with tab2:
 
 
 # ===== 탭 3: 조 편성 =====
-import random
-from collections import defaultdict
-import pandas as pd
-import io
-
 def parse_names(raw: str, delim: str):
     if delim == "\\n":
         parts = raw.splitlines()
