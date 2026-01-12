@@ -650,7 +650,7 @@ def format_teams_with_camera_mark(teams, camera_set):
 # ===== 메인 UI (Tab3) =====
 with tab3:
     st.subheader("👥 조 편성")
-    st.info("💡 콤마(,) 또는 줄바꿈(Enter)으로 이름을 구분합니다. 카메라 보유자는 자동으로 균등하게 분산됩니다. 조사자/섹장 후보 중 배정되지 않은 사람은 자동으로 쩌리로 편입됩니다.")
+    st.info("💡 미완성입니다. 원하는 기능 있으시면 안진우에게 카톡주세요. 콤마(,) 또는 줄바꿈(Enter)으로 이름을 구분합니다. 카메라 보유자는 자동으로 균등하게 분산됩니다. 조사자/섹장 후보 중 배정되지 않은 사람은 자동으로 쩌리로 편입됩니다.")
 
     k = st.number_input("조 개수", min_value=1, value=3, step=1)
 
