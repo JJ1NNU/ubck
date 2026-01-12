@@ -84,17 +84,21 @@ with tab1:
 with tab2:
     st.subheader("🗺️ 조사 경로")
 
-    # GPS 위치 가져오기
+    ZOOM_LABEL_THRESHOLD = 15
+
+    if "map_zoom" not in st.session_state:
+        st.session_state["map_zoom"] = 13
+
+    # GPS
     col_gps1, col_gps2 = st.columns([1, 4])
     with col_gps1:
         gps_button = st.button("📍 내 위치", use_container_width=True)
 
     location = streamlit_geolocation()
 
-    # 2개 메인 탭 생성 (하천/하구)
+    # 메인 탭
     subtabs = st.tabs(["하천", "하구"])
     
-    # 각 탭별 Shapefile 설정
     tab_configs = [
     {
         "name": "하천",
@@ -124,7 +128,6 @@ with tab2:
             return 'blue'
         
     def normalize_sector_value(tab_name: str, sector_value: str):
-        """색상/표시 통일을 위한 sector 정규화."""
         if sector_value is None:
             return None
         s = str(sector_value).strip()
@@ -136,14 +139,9 @@ with tab2:
         return s
 
     def build_sector_color_map(tab_name: str, gdfs: dict):
-        """
-        탭(하천/하구) 단위로 sector->color 매핑을 1회 생성.
-        - 하구 polygon은 색 고정이므로, 매핑에는 굳이 포함하지 않아도 됨(포함해도 무방).
-        """
         seen = set()
         ordered = []
 
-        # line -> polygon -> point 순서로 “처음 등장한 sector”를 수집
         for lt in ["line", "polygon", "point"]:
             if lt not in gdfs:
                 continue
@@ -160,10 +158,9 @@ with tab2:
                     seen.add(key)
                     ordered.append(key)
 
-        # colors는 기존 그대로 사용
         sector_color_map = {}
         for i, key in enumerate(ordered):
-            sector_color_map[key] = get_color_for_sector(key, ordered)  # 기존 함수 그대로 사용
+            sector_color_map[key] = get_color_for_sector(key, ordered)
 
         return sector_color_map
     
@@ -186,7 +183,7 @@ with tab2:
         ">{text}</div>
         """
 
-    def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None, label_text=None):
+    def add_point_geometry_to_map(geom, m, color, popup_text=None, tooltip_text=None, label_text=None, show_label=True):
         if geom is None:
             return
 
@@ -203,8 +200,7 @@ with tab2:
                 tooltip=tooltip_text,
             ).add_to(m)
 
-            # 지도 위 텍스트 라벨(시작/종료 + location) [web:165]
-            if label_text:
+            if label_text and show_label:
                 folium.Marker(
                     location=[pt.y, pt.x],
                     icon=folium.DivIcon(
@@ -234,7 +230,7 @@ with tab2:
             show_polygon = st.checkbox(f"{tab_config['name']} 폴리곤 표시", value=True, key=f"polygon_toggle_{tab_idx}")
             
             try:
-                # 모든 파일 로드
+                # 파일 로드
                 gdfs = {}
                 all_bounds = []
                 
@@ -289,34 +285,31 @@ with tab2:
                     control=True
                 ).add_to(m)
                 
-                # 각 레이어 추가 (라인 -> 폴리곤 -> 포인트 순서)
+                # 각 레이어 추가
                 for layer_type in ["line", "polygon", "point"]:
                     if layer_type not in gdfs:
                         continue
                     
-                    # 폴리곤이고 토글이 꺼져있으면 스킵
                     if layer_type == "polygon" and not show_polygon:
                         continue
                     
                     gdf = gdfs[layer_type]["gdf"]
                     layer_config = gdfs[layer_type]["config"]
                     
-                    # Sector 컬럼 찾기
                     sector_col = layer_config.get("sector_col", "sector")
 
-                    # 컬럼이 실제로 존재하는지 확인(대소문자까지)
                     if sector_col not in gdf.columns:
                         found = None
                         for c in gdf.columns:
                             if c.lower() == sector_col.lower():
                                 found = c
                                 break
-                        sector_col = found  # 못 찾으면 None
+                        sector_col = found
                                         
                     # 레이어별 처리
                     if layer_type == "line":
                         for idx_row, row in gdf.iterrows():
-                            # 색상 키(정규화 sector)
+
                             raw_sector = row[sector_col] if sector_col else None
                             sector_key = normalize_sector_value(tab_config["name"], raw_sector)
                             color = sector_color_map.get(sector_key, "blue")
@@ -342,7 +335,7 @@ with tab2:
                                 location=[centroid.y, centroid.x],
                                 icon=folium.DivIcon(
                                     html=make_label_html(display_name, color, font_size_pt=12, bold=True),
-                                    icon_size=(300, 24),     # 충분히 넓게
+                                    icon_size=(300, 24), 
                                     icon_anchor=(0, 0)
                                 )
                             ).add_to(m)
@@ -403,10 +396,11 @@ with tab2:
                             sector_key = normalize_sector_value(tab_config["name"], raw_sector)
                             color = sector_color_map.get(sector_key, "blue")
 
-                            # 시작/종료 + 지점명 라벨
                             se = str(row["startend"]).strip() if "startend" in gdf.columns and pd.notna(row["startend"]) else ""
                             loc = str(row["location"]).strip() if "location" in gdf.columns and pd.notna(row["location"]) else ""
                             label_text = f"{se}: {loc}" if se and loc else (loc if loc else None)
+
+                            show_point_labels = st.session_state["map_zoom"] >= ZOOM_LABEL_THRESHOLD
 
                             add_point_geometry_to_map(
                                 row["geometry"],
@@ -414,8 +408,10 @@ with tab2:
                                 color=color,
                                 popup_text=f"{layer_config['layer_name']} - {sector_key}",
                                 tooltip_text=f"{layer_config['layer_name']} - {sector_key}",
-                                label_text=label_text
+                                label_text=label_text,
+                                show_label=show_point_labels
                             )
+
                             
                 
                 # 내 위치 마커
@@ -440,7 +436,10 @@ with tab2:
                 folium.LayerControl().add_to(m)
                 
                 # 지도 렌더링 (모바일 친화)
-                st_folium(m, use_container_width=True, height=420, key=f"map_{tab_idx}")
+                map_out = st_folium(m, use_container_width=True, height=420, key=f"map_{tab_idx}")
+
+                if map_out and map_out.get("zoom") is not None:
+                    st.session_state["map_zoom"] = map_out["zoom"]
                 
                 # GPS 정보 표시
                 if location and location.get("latitude"):
