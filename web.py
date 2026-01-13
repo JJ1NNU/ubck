@@ -835,7 +835,9 @@ with tab3:
                 height=300
             )
             
-            st.session_state[key_df] = edited_df
+            if not edited_df.equals(st.session_state[key_df]):
+                st.session_state[key_df] = edited_df
+                st.rerun()
 
             warnings = get_warnings(edited_df, day_num, st.session_state)
             if warnings:
