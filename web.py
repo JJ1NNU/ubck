@@ -769,7 +769,7 @@ def get_warnings(df, day_idx, session_state):
 # 메인 UI
 with tab3:
     st.subheader("👥 조 편성")
-    st.info("각 날짜 탭을 순서대로 진행하세요. 이전 날짜의 편성 결과가 다음 날짜의 알고리즘에 반영되어 중복을 최소화합니다. \n조사자/섹장을 이미 했던 사람은 최대한 쩌리로 가며, 같은 조에 또다시 배정되는 일을 최소화합니다.")
+    st.info("각 날짜 탭을 순서대로 진행하세요. 이전 날짜의 편성 결과가 다음 날짜의 알고리즘에 반영되어 중복을 최소화합니다.  \n조사자/섹장을 이미 했던 사람은 최대한 쩌리로 가며, 같은 조에 또다시 배정되는 일을 최소화합니다.  \n콤마(,), Enter, Tab 으로 사람을 구분합니다. 후보 입력 칸이나 아래 표 모두 '엑셀에서 그대로 북사/붙여넣기'를 허용합니다.")
 
     days = st.tabs([f"{i}일차" for i in range(1, 6)])
 
@@ -798,18 +798,18 @@ with tab3:
             
             c1, c2, c3, c4 = st.columns(4)
             with c1:
-                inv_txt = st.text_area("조사자 후보", value=prev_inv, height=150, key=key_input_inv)
+                inv_txt = st.text_area("조사자 후보", value=prev_inv, height=150, key=key_input_inv, placeholder="김조사\n이조사")
             with c2:
-                lead_txt = st.text_area("섹장 후보", value=prev_lead, height=150, key=key_input_lead)
+                lead_txt = st.text_area("섹장 후보", value=prev_lead, height=150, key=key_input_lead. placeholder="김섹장, 이섹장")
             with c3:
                 extra_txt = st.text_area("쩌리 후보", value=prev_extra, height=150, key=key_input_extra)
             with c4:
-                cam_txt = st.text_area("📸 카메라", value=prev_cam, height=150, key=key_input_cam)
+                cam_txt = st.text_area("📸 카메라", value=prev_cam, height=150, key=key_input_cam, placeholder="여기 적힌 사람은\n가능한 조별로 찢어집니다.", help="역할(조사/섹장/쩌리)과 상관없이 카메라가 있는 사람들 이름을 모두 적으세요.")
 
             with st.expander("🚫 제약 조건"):
                 ca, cb = st.columns(2)
-                with ca: must_together_txt = st.text_area("꼭 같은 팀 (A-B)", height=70, key=f"together_{day_num}")
-                with cb: must_apart_txt = st.text_area("꼭 다른 팀 (A-B)", height=70, key=f"apart_{day_num}")
+                with ca: must_together_txt = st.text_area("꼭 같은 팀 (A-B)", height=70, key=f"together_{day_num}", placeholder="철수-영희\n박새-오목눈이")
+                with cb: must_apart_txt = st.text_area("꼭 다른 팀 (A-B)", height=70, key=f"apart_{day_num}", placeholder="강아지-고양이, 사자-호랑이")
 
             if st.button(f"🚀 {day_num}일차 조 편성 실행", key=f"btn_{day_num}", use_container_width=True):
                 invs = parse_names_auto(inv_txt)
@@ -841,7 +841,9 @@ with tab3:
                 st.session_state[key_df] = pd.DataFrame(empty_data, columns=empty_cols)
 
             st.markdown(f"### 📝 {day_num}일차 조 편성")
-            st.caption("아래 표를 클릭하여 직접 이름을 수정하거나, 복사/붙여넣기 할 수 있습니다.\n셀을 수정하고 Tab을 누르거나 셀을 옮기면 수정이 적용됩니다. Enter로는 반영이 안돼요.\n조 이름은 수정이 불가합니다. xlsx 다운로드 후 수정해주세요.")
+            st.caption("아래 표를 클릭하여 직접 이름을 수정하거나 복사/붙여넣기 할 수 있습니다.")
+            st.caption("셀을 수정하고 Tab을 누르거나 셀을 옮기면 수정이 적용됩니다. Enter로는 반영이 안돼요!!")
+            st.caption("조 이름은 xlsx 다운로드 후 수정해주세요.")
             
             edited_df = st.data_editor(
                 st.session_state[key_df],
