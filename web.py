@@ -579,9 +579,9 @@ def try_make_teams_history_aware(k, investigators, leaders, cameras, extras, mus
             key = tuple(sorted((m, new_member)))
             penalty += pair_counts[key] * 1 
             
-        # 2. 조 중복 페널티 (이전에도 그 조였으면 감점) (가중치 5)
+        # 2. 조 중복 페널티 (이전에도 그 조였으면 감점) (가중치 10)
         prev_group_count = group_counts[new_member][group_num]
-        penalty += prev_group_count * 5
+        penalty += prev_group_count * 10
         
         return penalty
 
