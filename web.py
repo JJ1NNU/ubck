@@ -643,9 +643,9 @@ def try_make_teams_history_aware(k, investigators, leaders, cameras, extras, mus
                     # 1. 인원 수 (균형 맞추기)
                     score = len(team['members']) * 1000 
                     
-                    # 2. 패널티 (쌍 중복 + 조 중복 * 5)
+                    # 2. 패널티 (쌍 중복 + 조 중복 * 10)
                     penalty = get_team_penalty(t_idx, current_names, p)
-                    score += penalty * 100
+                    score += penalty * 500
                     
                     # 3. 카메라 균형
                     if p in cam_set:
