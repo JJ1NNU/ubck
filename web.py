@@ -800,7 +800,7 @@ with tab3:
             with c1:
                 inv_txt = st.text_area("조사자 후보", value=prev_inv, height=150, key=key_input_inv, placeholder="김조사\n이조사")
             with c2:
-                lead_txt = st.text_area("섹장 후보", value=prev_lead, height=150, key=key_input_lead. placeholder="김섹장, 이섹장")
+                lead_txt = st.text_area("섹장 후보", value=prev_lead, height=150, key=key_input_lead, placeholder="김섹장, 이섹장")
             with c3:
                 extra_txt = st.text_area("쩌리 후보", value=prev_extra, height=150, key=key_input_extra)
             with c4:
