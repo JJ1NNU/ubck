@@ -4,7 +4,7 @@ import folium
 from streamlit_folium import st_folium
 import geopandas as gpd
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from streamlit_geolocation import streamlit_geolocation
 from folium import Icon, Marker
 import time
@@ -458,48 +458,36 @@ with tab2:
                 st.error(f"{tab_config['name']} 지도 로딩 실패: {e}")
 
 
-
 # ===== 탭 3: 조 편성 =====
 def parse_names_auto(raw: str):
-    """콤마(,) 또는 줄바꿈(\n)으로 이름을 분리하고 빈 값 제거"""
-    if not raw:
-        return []
-    # 정규식: , 또는 \n (공백 포함 가능)
-    parts = re.split(r'[,\n]+', raw)
+    if not raw: return []
+    parts = re.split(r'[,\n\t]+', raw)
     return [p.strip() for p in parts if p.strip()]
 
 def parse_pairs_auto(raw: str):
-    """
-    여러 줄 또는 콤마로 쌍들을 분리한 뒤,
-    각 쌍 내부를 '-'로 분리 (예: A-B, C-D)
-    """
-    if not raw:
-        return []
-    
+    if not raw: return []
     pairs = []
-    # 1차 분리: 줄바꿈 or 콤마로 덩어리 나누기
     chunks = re.split(r'[,\n]+', raw)
-    
     for chunk in chunks:
         chunk = chunk.strip()
-        if not chunk or '-' not in chunk:
-            continue
-        
-        # 2차 분리: '-' 기준으로 2개로 나눔
+        if not chunk or '-' not in chunk: continue
         parts = chunk.split('-', 1)
         if len(parts) == 2:
             a, b = parts[0].strip(), parts[1].strip()
-            if a and b:
-                pairs.append((a, b))
+            if a and b: pairs.append((a, b))
     return pairs
 
+def create_excel_buffer(df):
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='조편성', index=False)
+    buffer.seek(0)
+    return buffer
+
 def check_constraints(teams, must_together, must_apart):
-    """제약조건 검사 함수 (기존 로직 유지)"""
     person_to_team = {}
     for i, t in enumerate(teams):
-        # t는 {"조사자":..., "섹장":..., "쩌리":[...]} 형태여야 함
         members = [t["조사자"], t["섹장"]] + t["쩌리"]
-        # None 제외 (아직 배정 안 된 경우 등)
         members = [m for m in members if m]
         
         for m in members:
@@ -520,200 +508,350 @@ def check_constraints(teams, must_together, must_apart):
     return True, ""
 
 def create_excel_buffer(df):
-    """DataFrame을 메모리상 Excel 파일로 변환"""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
         df.to_excel(writer, sheet_name='조편성', index=False)
     buffer.seek(0)
     return buffer
 
-def try_make_teams_with_camera(k, investigators, leaders, cameras, extras, must_together, must_apart, max_tries=3000):
-    # 명단 복사
-    investigators = investigators[:]
-    leaders = leaders[:]
-    cameras = cameras[:]  # 카메라 보유자
-    extras = extras[:]
+def get_history_stats(day_idx, session_state):
+    """
+    현재 day_idx 이전(1일차 ~ day_idx-1)까지의 기록을 분석함.
+    Returns:
+        role_counts: {이름: {'조사자': 횟수, '섹장': 횟수}}
+        pair_counts: {(이름A, 이름B): 같이한 횟수}
+    """
+    role_counts = defaultdict(lambda: {'조사자': 0, '섹장': 0})
+    pair_counts = defaultdict(int)
 
-    # 중복 체크: 역할군 간에는 중복 없어야 함
-    # (카메라 명단에 있는 사람이 역할군 어디에도 없으면 쩌리로 추가)
-    role_union = set(investigators) | set(leaders) | set(extras)
-    for cam in cameras:
-        if cam not in role_union:
-            extras.append(cam) # 역할 없으면 쩌리로
+    for d in range(1, day_idx):
+        key = f"df_day_{d}"
+        if key in session_state and session_state[key] is not None:
+            df = session_state[key]
+
+            # df 구조: [역할, 1조, 2조, 3조...]
+            team_cols = [c for c in df.columns if "조" in c]
+            
+            # 1. 역할 카운트 (조사자, 섹장 행)
+            for _, row in df.iterrows():
+                role = row.get("역할")
+                if role in ["조사자", "섹장"]:
+                    for col in team_cols:
+                        name = str(row[col]).replace(" 📷", "").strip()
+                        if name and name != "nan" and name != "":
+                            role_counts[name][role] += 1
+            
+            # 2. 같은 팀 쌍 카운트
+            # 각 조(열)별로 멤버 명단을 추출
+            for col in team_cols:
+                members = []
+                for _, row in df.iterrows():
+                    name = str(row[col]).replace(" 📷", "").strip()
+                    if name and name != "nan" and name != "":
+                        members.append(name)
+                
+                # 쌍 생성
+                for i in range(len(members)):
+                    for j in range(i + 1, len(members)):
+                        p1, p2 = sorted((members[i], members[j]))
+                        pair_counts[(p1, p2)] += 1
+                        
+    return role_counts, pair_counts
+
+def try_make_teams_history_aware(k, investigators, leaders, cameras, extras, must_together, must_apart, history_stats, max_tries=1000):
+    role_counts, pair_counts = history_stats
     
-    role_all = investigators + leaders + extras
-    if len(set(role_all)) != len(role_all):
-        return None, None, "역할(조사자/섹장/쩌리) 명단 간에 중복된 이름이 있습니다. 한 명은 하나의 역할만 가능합니다."
+    inv_pool = investigators[:]
+    lead_pool = leaders[:]
+    cam_set = set(cameras)
+    extra_pool = extras[:]
+    
+    all_people = list(set(inv_pool + lead_pool + extra_pool))
+    
+    # 패널티 점수 계산
+    def get_pair_penalty(current_members, new_member):
+        penalty = 0
+        for m in current_members:
+            key = tuple(sorted((m, new_member)))
+            penalty += pair_counts[key]
+        return penalty
 
-    if len(investigators) < k:
-        return None, None, f"조사자 후보 부족 (필요 {k}, 현재 {len(investigators)})"
-    if len(leaders) < k:
-        return None, None, f"섹장 후보 부족 (필요 {k}, 현재 {len(leaders)})"
+    # 역할 패널티 (이미 많이 했으면 후순위)
+    def sort_by_role_fatigue(candidates, role_name):
+        return sorted(candidates, key=lambda x: (role_counts[x][role_name], random.random()))
 
-    camera_set = set(cameras)
+    best_teams = None
+    min_total_penalty = float('inf')
 
     for _ in range(max_tries):
-        random.shuffle(investigators)
-        random.shuffle(leaders)
-        random.shuffle(extras)
+        inv_candidates = sort_by_role_fatigue(inv_pool, '조사자')
+        lead_candidates = sort_by_role_fatigue(lead_pool, '섹장')
+        random.shuffle(extra_pool)
 
-        # 임시 구조: 멤버별로 has_cam 정보 저장
-        temp_teams = [{"members": [], "camera_count": 0} for _ in range(k)]
+        current_teams = [{"members": [], "camera_count": 0} for _ in range(k)]
         
-        # 1. 조사자 배정
-        inv_pick = investigators[:k]
-        inv_left = investigators[k:]
-        for i in range(k):
-            name = inv_pick[i]
-            has_cam = name in camera_set
-            temp_teams[i]["members"].append({"role": "조사자", "name": name, "has_cam": has_cam})
-            if has_cam: temp_teams[i]["camera_count"] += 1
-        
-        # 2. 섹장 배정
-        used_names = set(inv_pick)
-        lead_pool = [x for x in leaders if x not in used_names]
-        if len(lead_pool) < k: continue
-        
-        random.shuffle(lead_pool)
-        lead_pick = lead_pool[:k]
-        lead_left = [x for x in leaders if x not in lead_pick and x not in used_names]
+        # 조사자 배정
+        if len(inv_candidates) < k: return None, None, "조사자 후보 부족"
+        inv_picked = inv_candidates[:k]
+        inv_left = inv_candidates[k:]
         
         for i in range(k):
-            name = lead_pick[i]
-            has_cam = name in camera_set
-            temp_teams[i]["members"].append({"role": "섹장", "name": name, "has_cam": has_cam})
-            if has_cam: temp_teams[i]["camera_count"] += 1
+            p = inv_picked[i]
+            current_teams[i]["members"].append({"role": "조사자", "name": p})
+            if p in cam_set: current_teams[i]["camera_count"] += 1
 
-        # 3. 쩌리 배정 (카메라 균등 분배)
-        all_extras = extras + inv_left + lead_left
-        random.shuffle(all_extras)
+        # 섹장 배정
+        used = set(inv_picked)
+        valid_leaders = [p for p in lead_candidates if p not in used]
+        if len(valid_leaders) < k: continue
         
-        extra_cams = [x for x in all_extras if x in camera_set]
-        extra_no_cams = [x for x in all_extras if x not in camera_set]
+        lead_picked = valid_leaders[:k]
+        lead_left = [p for p in lead_candidates if p not in lead_picked and p not in used]
         
-        # 카메라 가진 쩌리 -> 카메라 적은 팀 우선
-        for cam_person in extra_cams:
-            temp_teams.sort(key=lambda t: t["camera_count"])
-            target = temp_teams[0]
-            target["members"].append({"role": "쩌리", "name": cam_person, "has_cam": True})
-            target["camera_count"] += 1
-            
-        # 카메라 없는 쩌리 -> 인원 적은 팀 우선
-        for no_cam_person in extra_no_cams:
-            temp_teams.sort(key=lambda t: len(t["members"]))
-            temp_teams[0]["members"].append({"role": "쩌리", "name": no_cam_person, "has_cam": False})
+        for i in range(k):
+            p = lead_picked[i]
+            current_teams[i]["members"].append({"role": "섹장", "name": p})
+            if p in cam_set: current_teams[i]["camera_count"] += 1
 
-        # 4. 포맷 변환 (check_constraints용)
-        formatted_teams = []
-        for t in temp_teams:
+        # 쩌리 배정
+        leftovers = extra_pool + inv_left + lead_left
+        
+        # 카메라 쩌리 구분
+        left_cams = [p for p in leftovers if p in cam_set]
+        left_no_cams = [p for p in leftovers if p not in cam_set]
+        random.shuffle(left_cams)
+        random.shuffle(left_no_cams)
+
+        def assign_extras(candidates):
+            for p in candidates:
+                # 규칙 1: 카메라 균형 (카메라 있는 사람이면 카메라 적은 팀 우선)
+                # 규칙 2: 인원 균형 (인원 적은 팀 우선)
+                # 규칙 3: 과거 이력 (팀원들과 겹친 횟수 적은 팀 우선)
+                
+                # 우선순위: 인원수 -> (카메라수) -> 이력 패널티
+                # 점수 계산: (인원수 * 100) + (이력패널티 * 1) 
+                # 카메라 보유자라면 (카메라수 * 50) 추가
+                
+                best_team_idx = -1
+                best_score = float('inf')
+                
+                # 후보 팀 탐색
+                team_indices = list(range(k))
+                random.shuffle(team_indices)
+                
+                for t_idx in team_indices:
+                    team = current_teams[t_idx]
+                    current_names = [m['name'] for m in team['members']]
+                    
+                    score = len(team['members']) * 1000
+                    score += get_pair_penalty(current_names, p) * 100
+                    
+                    if p in cam_set:
+                        score += team['camera_count'] * 500
+                        
+                    if score < best_score:
+                        best_score = score
+                        best_team_idx = t_idx
+                
+                # 배정
+                current_teams[best_team_idx]["members"].append({"role": "쩌리", "name": p})
+                if p in cam_set: current_teams[best_team_idx]["camera_count"] += 1
+
+        assign_extras(left_cams)
+        assign_extras(left_no_cams)
+
+        # 제약조건
+        formatted = []
+        total_pair_penalty_score = 0
+        
+        for t in current_teams:
             ft = {"조사자": None, "섹장": None, "쩌리": []}
+            names_in_team = []
             for m in t["members"]:
+                names_in_team.append(m["name"])
                 if m["role"] == "조사자": ft["조사자"] = m["name"]
                 elif m["role"] == "섹장": ft["섹장"] = m["name"]
                 else: ft["쩌리"].append(m["name"])
-            formatted_teams.append(ft)
-            
-        # 5. 제약조건 검사
-        ok, reason = check_constraints(formatted_teams, must_together, must_apart)
+            formatted.append(ft)
+
+            for i in range(len(names_in_team)):
+                for j in range(i+1, len(names_in_team)):
+                    p1, p2 = sorted((names_in_team[i], names_in_team[j]))
+                    total_pair_penalty_score += pair_counts[(p1, p2)]
+
+        ok, msg = check_constraints(formatted, must_together, must_apart)
+        
         if ok:
-            return formatted_teams, camera_set, ""
-
-    return None, None, f"조건을 만족하는 조합을 찾지 못했습니다. (재시도 {max_tries}회)"
-
-
-def format_teams_with_camera_mark(teams, camera_set):
-    """표시용 데이터프레임 생성 (카메라 📷 표시)"""
-    max_jjuri = max((len(t["쩌리"]) for t in teams), default=0)
+            if total_pair_penalty_score < min_total_penalty:
+                min_total_penalty = total_pair_penalty_score
+                best_teams = formatted
+                
+                if min_total_penalty == 0:
+                    break
     
+    if best_teams:
+        return best_teams, cam_set, None
+    else:
+        return None, None, "조건을 만족하는 조합을 찾지 못했습니다."
+
+def format_teams_for_editor(teams, camera_set):
+    max_jjuri = max((len(t["쩌리"]) for t in teams), default=0)
     def mark(name):
+        if not name: return ""
         return f"{name} 📷" if name in camera_set else name
 
     rows = []
-    # 조사자
     rows.append(["조사자"] + [mark(t["조사자"]) for t in teams])
-    # 섹장
     rows.append(["섹장"] + [mark(t["섹장"]) for t in teams])
-    # 쩌리들
     for i in range(max_jjuri):
         row = [f"쩌리{i+1}"]
         for t in teams:
-            if i < len(t["쩌리"]):
-                row.append(mark(t["쩌리"][i]))
-            else:
-                row.append("")
+            if i < len(t["쩌리"]): row.append(mark(t["쩌리"][i]))
+            else: row.append("")
         rows.append(row)
         
     cols = ["역할"] + [f"{i+1}조" for i in range(len(teams))]
     return pd.DataFrame(rows, columns=cols)
 
+def get_warnings(df, day_idx, session_state):
+    warnings = []
+    if df is None or df.empty: return warnings
+    
+    role_counts, pair_counts = get_history_stats(day_idx, session_state)
+    
+    team_cols = [c for c in df.columns if "조" in c]
+    
+    # 역할 중복 경고
+    for _, row in df.iterrows():
+        role = row.get("역할")
+        if role in ["조사자", "섹장"]:
+            for col in team_cols:
+                name_raw = str(row[col])
+                name = name_raw.replace(" 📷", "").strip()
+                if name and name != "nan" and name in role_counts:
+                    prev_count = role_counts[name][role]
+                    if prev_count > 0:
+                        warnings.append(f"⚠️ **{name}**: 과거에 이미 '{role}' 역할을 {prev_count}번 수행했습니다.")
 
-# ===== 메인 UI (Tab3) =====
+    # 팀원 중복 경고
+    for col in team_cols:
+        members = []
+        for _, row in df.iterrows():
+            name = str(row[col]).replace(" 📷", "").strip()
+            if name and name != "nan": members.append(name)
+        
+        for i in range(len(members)):
+            for j in range(i+1, len(members)):
+                p1, p2 = sorted((members[i], members[j]))
+                count = pair_counts[(p1, p2)]
+                if count > 0:
+                    warnings.append(f"ℹ️ **{col}**: ({p1}, {p2}) 조합은 이전에 {count}번 같은 조였습니다.")
+                    
+    return warnings
+
+
+# 메인 UI
 with tab3:
     st.subheader("👥 조 편성")
-    st.info("💡 미완성입니다. 원하는 기능 있으시면 안진우에게 카톡주세요. 콤마(,) 또는 줄바꿈(Enter)으로 이름을 구분합니다. 카메라 보유자는 자동으로 균등하게 분산됩니다. 조사자/섹장 후보 중 배정되지 않은 사람은 자동으로 쩌리로 편입됩니다.")
+    st.info("각 날짜 탭을 순서대로 진행하세요. 이전 날짜의 편성 결과가 다음 날짜의 알고리즘에 반영되어 중복을 최소화합니다.")
 
-    k = st.number_input("조 개수", min_value=1, value=3, step=1)
+    days = st.tabs([f"{i}일차" for i in range(1, 6)])
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        investigators_raw = st.text_area("조사자 후보", height=200, placeholder="김조사\n이조사")
-    with c2:
-        leaders_raw = st.text_area("섹장 후보", height=200, placeholder="박섹장, 최섹장")
-    with c3:
-        extras_raw = st.text_area("쩌리 후보", height=200, placeholder="나머지 인원\n(비워둬도 됨)")
-    with c4:
-        cameras_raw = st.text_area("📸 카메라 보유자", height=200, placeholder="여기 적힌 사람은\n가능한 조별로 찢어집니다.", help="역할(조사/섹장/쩌리)과 상관없이 카메라 가진 사람 이름을 적으세요.")
-
-    with st.expander("🚫 제약 조건 (같이/따로)"):
-        st.caption("이름 사이에 하이픈(-)을 넣어 쌍을 만드세요. 여러 쌍은 콤마나 줄바꿈으로 구분.")
-        c_a, c_b = st.columns(2)
-        with c_a:
-            must_together_raw = st.text_area("꼭 같은 팀", placeholder="철수-영희\n민수-지수", height=100)
-        with c_b:
-            must_apart_raw = st.text_area("꼭 다른 팀", placeholder="사자-호랑이", height=100)
-
-    run_team = st.button("조 편성 실행 🎲", use_container_width=True)
-
-    if run_team:
-        # 자동 파싱
-        investigators = parse_names_auto(investigators_raw)
-        leaders = parse_names_auto(leaders_raw)
-        cameras = parse_names_auto(cameras_raw)
-        extras = parse_names_auto(extras_raw)
-
-        must_together = parse_pairs_auto(must_together_raw)
-        must_apart = parse_pairs_auto(must_apart_raw)
-
-        # 조 편성 로직 실행
-        teams_data, cam_set, err = try_make_teams_with_camera(
-            k=int(k),
-            investigators=investigators,
-            leaders=leaders,
-            cameras=cameras,
-            extras=extras,
-            must_together=must_together,
-            must_apart=must_apart
-        )
-
-        if err:
-            st.error(err)
-        else:
-            st.success("조 편성이 완료되었습니다! (📷 표시는 카메라 보유자)")
+    for i, day_tab in enumerate(days):
+        day_num = i + 1
+        with day_tab:
+            st.markdown(f"### 📅 {day_num}일차")
             
-            # 결과 표시
-            df_display = format_teams_with_camera_mark(teams_data, cam_set)
-            st.dataframe(df_display, use_container_width=True, hide_index=True)
+            key_df = f"df_day_{day_num}"
+            key_input_inv = f"input_inv_{day_num}"
+            key_input_lead = f"input_lead_{day_num}"
+            key_input_cam = f"input_cam_{day_num}"
+            key_input_extra = f"input_extra_{day_num}"
+            
+            if day_num > 1:
+                prev_inv = st.session_state.get(f"input_inv_{day_num-1}", "")
+                prev_lead = st.session_state.get(f"input_lead_{day_num-1}", "")
+                prev_cam = st.session_state.get(f"input_cam_{day_num-1}", "")
+                prev_extra = st.session_state.get(f"input_extra_{day_num-1}", "")
+            else:
+                prev_inv, prev_lead, prev_cam, prev_extra = "", "", "", ""
 
-            # 다운로드
-            excel_buffer = create_excel_buffer(df_display)
-            st.download_button(
-                label="📥 결과 엑셀 다운로드",
-                data=excel_buffer,
-                file_name="조편성_카메라분배.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            col_cfg1, col_cfg2 = st.columns([1, 3])
+            with col_cfg1:
+                k_val = st.number_input(f"{day_num}일차 조 개수", min_value=1, value=3, key=f"k_{day_num}")
+            
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                inv_txt = st.text_area("조사자 후보", value=prev_inv, height=150, key=key_input_inv)
+            with c2:
+                lead_txt = st.text_area("섹장 후보", value=prev_lead, height=150, key=key_input_lead)
+            with c3:
+                extra_txt = st.text_area("쩌리 후보", value=prev_extra, height=150, key=key_input_extra)
+            with c4:
+                cam_txt = st.text_area("📸 카메라", value=prev_cam, height=150, key=key_input_cam)
+
+            with st.expander("🚫 제약 조건"):
+                ca, cb = st.columns(2)
+                with ca: must_together_txt = st.text_area("꼭 같은 팀 (A-B)", height=70, key=f"together_{day_num}")
+                with cb: must_apart_txt = st.text_area("꼭 다른 팀 (A-B)", height=70, key=f"apart_{day_num}")
+
+            if st.button(f"🚀 {day_num}일차 조 편성 실행", key=f"btn_{day_num}", use_container_width=True):
+                invs = parse_names_auto(inv_txt)
+                leads = parse_names_auto(lead_txt)
+                cams = parse_names_auto(cam_txt)
+                extras = parse_names_auto(extra_txt)
+                mt = parse_pairs_auto(must_together_txt)
+                ma = parse_pairs_auto(must_apart_txt)
+                
+                history_stats = get_history_stats(day_num, st.session_state)
+                
+                teams_struct, cam_set, err = try_make_teams_history_aware(
+                    k=int(k_val), investigators=invs, leaders=leads, cameras=cams, extras=extras,
+                    must_together=mt, must_apart=ma, history_stats=history_stats
+                )
+                
+                if err:
+                    st.error(err)
+                else:
+                    df_res = format_teams_for_editor(teams_struct, cam_set)
+                    st.session_state[key_df] = df_res
+                    st.rerun()
+
+            st.divider()
+            
+            if key_df not in st.session_state:
+                empty_cols = ["역할"] + [f"{i+1}조" for i in range(k_val)]
+                empty_data = [["조사자"] + [""]*k_val, ["섹장"] + [""]*k_val] + [[f"쩌리{r+1}"] + [""]*k_val for r in range(3)]
+                st.session_state[key_df] = pd.DataFrame(empty_data, columns=empty_cols)
+
+            st.markdown(f"### 📝 {day_num}일차 결과 (직접 수정 가능)")
+            st.caption("아래 표를 클릭하여 직접 이름을 수정하거나, 복사/붙여넣기 할 수 있습니다.")
+            
+            edited_df = st.data_editor(
+                st.session_state[key_df],
+                key=f"editor_{day_num}",
+                num_rows="dynamic",
+                use_container_width=True,
+                height=300
             )
+            
+            st.session_state[key_df] = edited_df
 
-# 조 짜는 UI 자체를 만들기
-# 과거 조 기록을 기반으로, 같은 조에 연속으로 들어가지 않도록 하는 기능 추가하기
-# -> 예비조사 본조사 등등 날짜마다 탭을 만들기
-# 과거에 조사자/섹장 했던 사람은 횟수를 띄워줘서 조절할 수 있게 하기
+            warnings = get_warnings(edited_df, day_num, st.session_state)
+            if warnings:
+                with st.container():
+                    st.warning(f"⚠️ {len(warnings)}건의 중복 알림이 있습니다:")
+                    for w in warnings:
+                        st.write(w)
+            else:
+                if not edited_df.empty:
+                    st.success("✅ 중복되는 역할이나 팀 구성이 없습니다 (또는 1일차입니다).")
+
+            csv_buffer = create_excel_buffer(edited_df)
+            st.download_button(
+                label=f"💾 {day_num}일차 조 편성 결과 다운로드 (.xlsx)",
+                data=csv_buffer,
+                file_name=f"조편성_{day_num}일차.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key=f"down_{day_num}"
+            )
