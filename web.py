@@ -89,7 +89,15 @@ with tab2:
     with col_gps1:
         gps_button = st.button("📍 내 위치", use_container_width=True)
 
-    location = streamlit_geolocation()
+    # geolocation 호출
+    loc_data = streamlit_geolocation()
+
+    # location 정보를 세션 스테이트에 저장/업데이트
+    if loc_data and loc_data.get("latitude"):
+        st.session_state["my_location"] = loc_data
+
+    # 세션에서 위치 정보 가져오기 (없으면 None)
+    current_location = st.session_state.get("my_location", None)
 
     # 2개 메인 탭 생성 (하천/하구)
     subtabs = st.tabs(["하천", "하구"])
@@ -259,14 +267,14 @@ with tab2:
                     default_center_lat, default_center_lon = 37.5, 127.0
                 
                 # GPS 위치 설정
-                if gps_button and location and location.get("latitude"):
-                    center_lat = location["latitude"]
-                    center_lon = location["longitude"]
+                if gps_button and current_location and current_location.get("latitude"):
+                    center_lat = current_location["latitude"]
+                    center_lon = current_location["longitude"]
                     zoom = 16
-                elif location and location.get("latitude"):
-                    center_lat = location["latitude"]
-                    center_lon = location["longitude"]
-                    zoom = 15
+                elif current_location and current_location.get("latitude"):
+                     center_lat = default_center_lat
+                     center_lon = default_center_lon
+                     zoom = 13
                 else:
                     center_lat = default_center_lat
                     center_lon = default_center_lon
@@ -419,40 +427,35 @@ with tab2:
                             
                 
                 # 내 위치 마커
-                if location and location.get("latitude"):
+                if current_location and current_location.get("latitude"):
                     folium.Marker(
-                        location=[location["latitude"], location["longitude"]],
+                        location=[current_location["latitude"], current_location["longitude"]],
                         popup="📍 현재 위치",
                         tooltip="내 위치",
                         icon=folium.Icon(color='red', icon='user', prefix='fa')
                     ).add_to(m)
                     
-                    if location.get("accuracy"):
+                    if current_location.get("accuracy"):
                         folium.Circle(
-                            location=[location["latitude"], location["longitude"]],
-                            radius=location["accuracy"],
-                            color='red',
-                            fill=True,
-                            fillOpacity=0.1,
-                            popup=f"오차범위: {location['accuracy']:.0f}m"
+                            location=[current_location["latitude"], current_location["longitude"]],
+                            radius=current_location["accuracy"],
+                            color='red', fill=True, fillOpacity=0.1,
+                            popup=f"오차범위: {current_location['accuracy']:.0f}m"
                         ).add_to(m)
                 
                 folium.LayerControl().add_to(m)
-                
-                # 지도 렌더링 (모바일 친화)
                 st_folium(m, use_container_width=True, height=420, key=f"map_{tab_idx}")
                 
-                # GPS 정보 표시
-                if location and location.get("latitude"):
-                    st.success(f"📍 현재 위치: 위도 {location['latitude']:.6f}, 경도 {location['longitude']:.6f}")
-                    st.info(f"정확도: ±{location.get('accuracy', 0):.0f}m")
+                # GPS 정보 텍스트 표시
+                if current_location and current_location.get("latitude"):
+                    st.success(f"📍 현재 위치: 위도 {current_location['latitude']:.6f}, 경도 {current_location['longitude']:.6f}")
                 else:
-                    st.warning("위치 권한을 허용하면 내 위치가 지도에 표시됩니다.")
+                    st.warning("위치 정보를 가져오는 중이거나 권한이 필요합니다.")
                 
                 # 실시간 추적
-                if location and location.get("latitude"):
-                    time.sleep(0.1)
-                    st.rerun()
+                if current_location and gps_button:
+                     time.sleep(0.1)
+                     st.rerun()
             
             except Exception as e:
                 st.error(f"{tab_config['name']} 지도 로딩 실패: {e}")
