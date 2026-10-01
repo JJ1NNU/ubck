@@ -1,7 +1,4 @@
-streamlit
-groq
-streamlit-folium
-folium 
+streamlit>=1.46
 geopandas
+pandas
 openpyxl
-streamlit-geolocation
