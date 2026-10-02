@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pandas as pd
 import streamlit as st
@@ -10,11 +11,11 @@ from ubck import storage
 from ubck.storage import ATTR_COLUMNS, ROSTER_BOOL, ROSTER_COLUMNS
 from ubck.teams.engine import SolveError, solve
 from ubck.teams.history import build_history
-from ubck.teams.io import (day_xlsx, df_to_result, empty_df, fairness_df, project_xlsx, read_result_xlsx,
-                           result_to_df)
-from ubck.teams.model import (CAMERA_MARK, Person, Rules, TeamResult, TeamSpec, Weights, parse_fixed, parse_groups,
-                              parse_names)
-from ubck.teams.report import check_result
+from ubck.teams.io import (STATE_IN, STATE_OUT, day_xlsx, df_to_result, empty_df, fairness_df, list_to_result,
+                           project_xlsx, read_result_xlsx, result_to_df, result_to_list)
+from ubck.teams.model import (ROLE_INV, ROLE_LEAD, ROLE_MEMBER, Person, Rules, TeamResult, TeamSpec, Weights,
+                              parse_fixed, parse_groups, parse_names)
+from ubck.teams.report import change_hints, check_result
 
 PART_COLS = ["이름", "참가", "조사자", "섹장", "카메라"]
 
@@ -221,7 +222,7 @@ def _day_tab(project: dict) -> None:
             _bump("teams" + did)
             _save()
             st.rerun()
-    tc[3].caption("조 이름을 조사 섹터 이름으로 해 두면 '같은 섹터에 또 배정'을 피할 수 있습니다. "
+    tc[3].caption("조 이름을 조사 섹터 이름으로 해 두면 '이미 간 섹터에 다시 배정하지 않기'가 섹터 기준으로 동작합니다. "
                   "정원을 비워 두면 남은 인원을 고르게 나눕니다.")
     tbase = _stable_df("teams" + did, lambda: pd.DataFrame(
         [{"조 이름": t["name"], "정원": t.get("size")} for t in day["teams"]]))
@@ -282,6 +283,22 @@ def _day_tab(project: dict) -> None:
 
     # ---- 3. 규칙
     st.markdown("#### 3. 조건")
+    settings = project["settings"]
+    sc3 = st.columns([2, 2, 1])
+    no_revisit = sc3[0].checkbox("이미 간 섹터에 다시 배정하지 않기", value=bool(settings.get("no_revisit", True)),
+                                 key="no_revisit", help="이전 일차에 배정됐던 조(섹터)에는 다시 넣지 않습니다. "
+                                                        "조 이름이 같으면 같은 섹터로 봅니다. '고정'이 이보다 우선합니다.")
+    rotate_inv = sc3[1].checkbox("조사자를 아직 안 해 본 자격자부터", value=bool(settings.get("rotate_inv", True)),
+                                 key="rotate_inv", help="조사자 가능자가 모두 한 번씩 할 때까지 해 본 사람은 다시 조사자가 되지 않게 합니다.")
+    total_days = sc3[2].number_input("전체 일정(일)", 1, 30, int(settings.get("total_days") or max(len(days), 1)),
+                                     key="total_days", help="조사자 순환이 일정 안에 끝나는지 계산하는 데 씁니다.")
+    if (no_revisit, rotate_inv, total_days) != (settings.get("no_revisit"), settings.get("rotate_inv"), settings.get("total_days")):
+        settings.update(no_revisit=no_revisit, rotate_inv=rotate_inv, total_days=int(total_days))
+        _save()
+    if no_revisit and idx > 0 and all(re.fullmatch(r"\d+조", n) for n in tnames):
+        st.info("조 이름이 '1조, 2조…' 형식이라 '이미 간 섹터'를 '이미 했던 조 번호'로 판단합니다. "
+                "날마다 조 번호와 섹터가 다르게 짝지어진다면 위 1단계에서 조 이름을 섹터 이름으로 바꿔 주세요.")
+
     rules_raw = day["rules"]
     rc = st.columns(3)
     together = rc[0].text_area("꼭 같은 조", rules_raw["together"], key=f"tog_{did}", height=110,
@@ -296,7 +313,8 @@ def _day_tab(project: dict) -> None:
         day["rules"] = new_rules
         _save()
     fixed_team, fixed_role, bad = parse_fixed(fixed, tnames)
-    rules = Rules(parse_groups(together), parse_groups(apart), fixed_team, fixed_role)
+    rules = Rules(parse_groups(together), parse_groups(apart), fixed_team, fixed_role,
+                  no_revisit=no_revisit, rotate_inv=rotate_inv)
     if bad:
         st.warning(f"'고정'에서 이해하지 못한 줄: {', '.join(bad)} (조 이름이나 '조사자'/'섹장'인지 확인)")
     known = {r["이름"] for r in roster}
@@ -304,18 +322,23 @@ def _day_tab(project: dict) -> None:
     typo = [n for n in typo if n not in known]
     if typo:
         st.warning(f"명단에 없는 이름: {', '.join(typo)}")
+    inv_ok = {r["이름"] for r in roster if r.get("조사자")} | {nm for nm, v in parts.items() if v["조사자"]}
+    lead_ok = {r["이름"] for r in roster if r.get("섹장")} | {nm for nm, v in parts.items() if v["섹장"]}
+    if rotate_inv:
+        _rotation_status(inv_ok, history, present, parts, len(tnames), int(total_days), idx)
 
     # ---- 4. 실행
     st.markdown("#### 4. 편성")
-    settings = project["settings"]
     with st.expander("무엇을 얼마나 중요하게 볼지 (가중치)와 탐색 시간"):
         w = settings["weights"]
         wc = st.columns(4)
         nw = {
             "pair": wc[0].slider("같은 사람과 또 만나기", 0.0, 10.0, float(w["pair"]), 0.5, key="w_pair",
                                  help="이전에 같은 조였던 두 사람이 또 같은 조가 될 때마다 더하는 벌점"),
-            "same_team": wc[1].slider("같은 조(섹터) 또 배정", 0.0, 10.0, float(w["same_team"]), 0.5, key="w_team"),
-            "role": wc[2].slider("조사자·섹장 또 맡기", 0.0, 10.0, float(w["role"]), 0.5, key="w_role"),
+            "same_team": wc[1].slider("같은 조(섹터) 또 배정", 0.0, 10.0, float(w["same_team"]), 0.5, key="w_team",
+                                      help="'이미 간 섹터에 다시 배정하지 않기'를 껐을 때만 쓰입니다."),
+            "role": wc[2].slider("조사자·섹장 또 맡기", 0.0, 10.0, float(w["role"]), 0.5, key="w_role",
+                                 help="조사자 순환을 켜면 조사자는 이 값과 관계없이 순환을 먼저 지킵니다. 섹장 반복에는 계속 쓰입니다."),
             "camera": wc[3].slider("카메라 몰림", 0.0, 10.0, float(w["camera"]), 0.5, key="w_cam"),
         }
         attr_avail = [c for c in ATTR_COLUMNS if any(r.get(c) not in (None, "") for r in roster)]
@@ -356,7 +379,7 @@ def _day_tab(project: dict) -> None:
             st.error("편성할 수 없습니다.\n\n" + "\n".join(f"- {m}" for m in e.messages))
 
     res = st.session_state.get("cands", {}).get(did)
-    cams = {nm for nm, v in parts.items() if v["카메라"]}
+    cams = {nm for nm, v in parts.items() if v["카메라"]} | {r["이름"] for r in roster if r.get("카메라")}
     if res:
         for wmsg in res.warnings:
             st.warning(wmsg)
@@ -372,52 +395,152 @@ def _day_tab(project: dict) -> None:
                 st.dataframe(result_to_df(sol.teams, cams), hide_index=True, width="stretch")
                 if st.button("이 후보로 확정", key=f"pick_{did}_{i}", type="primary"):
                     day["result"] = [t.to_dict() for t in sol.teams]
-                    _bump("res" + did)
+                    day["absent"], day["notes"] = [], {}
+                    _bump("piv" + did)
+                    _bump("lst" + did)
                     st.session_state["cands"].pop(did, None)
                     _save()
-                    st.session_state.flash = f"{day['label']} 편성을 확정했습니다. 아래 표에서 직접 고칠 수 있습니다."
+                    st.session_state.flash = (f"{day['label']} 편성을 확정했습니다. 당일 결원·추가는 아래 "
+                                              "'사람별 목록'에서 고치세요.")
                     st.rerun()
         if day.get("result"):
-            st.caption("확정하면 아래의 현재 편성 결과를 덮어씁니다.")
+            st.caption("확정하면 아래의 현재 편성 결과(결원 표시 포함)를 덮어씁니다.")
 
     # ---- 5. 결과
+    _result_section(day, did, tnames, cams, roster, project, parts, present, known, rules, history,
+                    inv_ok, lead_ok)
+
+
+def _rotation_status(inv_ok: set[str], history, present: list[str], parts: dict, k: int, total_days: int,
+                     idx: int) -> None:
+    done = {n for n in inv_ok if history.role[n][ROLE_INV]}
+    waiting = sorted(inv_ok - done)
+    remaining_days = max(total_days - idx, 1)
+    slots = k * remaining_days
+    today = [n for n in waiting if n in present and parts.get(n, {}).get("조사자")]
+    away = [n for n in waiting if n not in today]
+    with st.container(border=True):
+        st.markdown(f"**조사자 순환**: 자격자 {len(inv_ok)}명 중 {len(done)}명이 해 봤고 {len(waiting)}명 남았습니다.")
+        if not waiting:
+            st.caption("모든 자격자가 한 번씩 조사자를 했습니다. 이제부터는 횟수가 적은 사람부터 맡습니다.")
+            return
+        msg = (f"오늘 포함 남은 {remaining_days}일 × 조 {k}개 = 조사자 자리 {slots}개. ")
+        if len(waiting) <= slots:
+            st.caption(msg + "일정 안에 모두 한 번씩 할 수 있습니다.")
+        else:
+            st.warning(msg + f"남은 {len(waiting)}명을 모두 넣기에 {len(waiting) - slots}자리가 모자랍니다. "
+                             "조를 늘리거나 일정을 확인하세요.")
+        if len(today) > k:
+            st.caption(f"오늘 참가하는 미경험자 {len(today)}명 중 {k}명이 조사자가 됩니다.")
+        if away:
+            lvl = st.warning if remaining_days == 1 else st.caption
+            lvl(("오늘이 마지막 날인데 " if remaining_days == 1 else "") +
+                f"오늘 불참(또는 오늘 조사자 불가)이라 다른 날 맡아야 하는 사람: {', '.join(away)}")
+
+
+def _canon(teams: list[TeamResult]):
+    kept = [t.to_dict() for t in teams if t.everyone]
+    return kept or None
+
+
+def _result_section(day, did, tnames, cams, roster, project, parts, present, known, rules, history,
+                    inv_ok, lead_ok) -> None:
     st.markdown("#### 5. 편성 결과")
-    result = [TeamResult.from_dict(t) for t in day["result"]] if day.get("result") else None
-    rbase = _stable_df("res" + did, lambda: result_to_df(result, cams) if result else empty_df(tnames))
-    st.caption("칸을 눌러 이름을 고치거나 붙여넣을 수 있습니다. 행 추가도 됩니다. 수정 내용은 바로 저장됩니다.")
-    redit = st.data_editor(rbase, key=f"res_ed_{did}_{_ver('res' + did)}", hide_index=True, width="stretch",
-                           num_rows="dynamic", disabled=["역할"] if result else False)
-    edited = [t for t in df_to_result(redit)]
-    has_any = any(t.everyone for t in edited)
-    new_result = [t.to_dict() for t in edited] if has_any else None
-    if new_result != day.get("result"):
-        day["result"] = new_result
+    stored = [TeamResult.from_dict(t) for t in day["result"]] if day.get("result") else []
+    absent = day.get("absent") or []
+    notes = day.get("notes") or {}
+    team_opts = [t.name for t in stored] + [n for n in tnames if n not in {t.name for t in stored}]
+
+    view = st.tabs(["조별 표", "사람별 목록 (결원·추가 수정)"])
+    with view[0]:
+        st.caption("칸을 눌러 이름을 고치거나 엑셀에서 붙여넣을 수 있습니다. 결원·추가는 옆 '사람별 목록'이 더 쉽습니다.")
+        pbase = _stable_df("piv" + did, lambda: result_to_df(stored, cams) if stored else empty_df(tnames))
+        pedit = st.data_editor(pbase, key=f"piv_ed_{did}_{_ver('piv' + did)}", hide_index=True, width="stretch",
+                               num_rows="dynamic", disabled=["역할"] if stored else False)
+        piv_teams = df_to_result(pedit)
+    with view[1]:
+        st.caption("한 줄이 한 사람입니다. 빠진 사람은 '상태'를 결원으로 바꾸면 원래 자리가 비어 보입니다. "
+                   "새로 온 사람은 맨 아래 빈 줄에 이름을 쓰고 조와 역할을 고르세요. 조사자·섹장 교체는 '역할'만 바꾸면 됩니다.")
+        lbase = _stable_df("lst" + did, lambda: result_to_list(stored, absent, notes))
+        ledit = st.data_editor(
+            lbase, key=f"lst_ed_{did}_{_ver('lst' + did)}", hide_index=True, width="stretch", num_rows="dynamic",
+            height=min(38 * (len(lbase) + 3), 640),
+            column_config={
+                # required를 걸면 덜 채운 새 줄이 아예 넘어오지 않아 안내를 못 하므로 걸지 않는다
+                "이름": st.column_config.TextColumn("이름"),
+                "조": st.column_config.SelectboxColumn("조", options=team_opts),
+                "역할": st.column_config.SelectboxColumn("역할", options=[ROLE_INV, ROLE_LEAD, ROLE_MEMBER],
+                                                       default=ROLE_MEMBER),
+                "상태": st.column_config.SelectboxColumn("상태", options=[STATE_IN, STATE_OUT], default=STATE_IN),
+                "메모": st.column_config.TextColumn("메모", default="", help="예: 오후 합류, 차량 있음"),
+            })
+        l_teams, l_absent, l_notes, problems = list_to_result(ledit, team_opts)
+
+    # 두 표 중 바뀐 쪽을 저장하고, 다른 쪽은 새로 그린다
+    cur = (_canon(stored), absent, notes)
+    if _canon(piv_teams) != cur[0] and (_canon(l_teams), l_absent, l_notes) == cur:
+        placed = {n for t in piv_teams for n in t.everyone}
+        day["result"] = _canon(piv_teams)
+        day["absent"] = [a for a in absent if a["name"] not in placed]
+        _bump("lst" + did)
         _save()
-    if has_any:
-        findings = check_result(edited, set(present), known, rules, history)
-        errs = [f for f in findings if f.level == "error"]
-        warns = [f for f in findings if f.level == "warn"]
-        infos = [f for f in findings if f.level == "info"]
-        for f in errs:
-            st.error(f.text)
-        for f in warns:
-            st.warning(f.text)
-        if infos:
-            with st.expander(f"이전 일차와 겹치는 점 {len(infos)}건"):
-                for f in infos:
-                    st.write(f.text)
-        elif not errs and not warns:
-            st.success("규칙 위반이나 이전 일차와의 겹침이 없습니다.")
-        dc = st.columns([2, 1])
-        dc[0].download_button(f"{day['label']} 결과 엑셀로 받기", day_xlsx(result_to_df(edited, cams), day["label"]),
-                              file_name=f"조편성_{day['label']}.xlsx", key=f"dl_{did}", width="stretch",
-                              mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        with dc[1].popover("결과 비우기", width="stretch"):
-            if st.button("편성 결과 지우기", key=f"clr_{did}", type="primary"):
-                day["result"] = None
-                _bump("res" + did)
-                _save()
-                st.rerun()
+        st.rerun()
+    elif (_canon(l_teams), l_absent, l_notes) != cur:
+        day["result"] = _canon(l_teams)
+        day["absent"], day["notes"] = l_absent, l_notes
+        _bump("piv" + did)
+        _save()
+        st.rerun()
+
+    for p in problems:
+        st.error(p)
+    if not stored:
+        return
+    absent_names = {a["name"] for a in absent}
+    added = [n for t in stored for n in t.everyone if n not in parts or not parts[n]["참가"]]
+    n_in = sum(len(t.everyone) for t in stored)
+    st.markdown(f"참석 **{n_in}명**, 결원 **{len(absent)}명**, 계획에 없던 추가 **{len(added)}명**")
+
+    hints = change_hints(stored, history, inv_ok, lead_ok, rules.no_revisit)
+    if hints:
+        with st.container(border=True):
+            st.markdown("**고칠 때 참고**")
+            for h in hints:
+                st.write(h)
+    findings = check_result(stored, set(present), known, rules, history, absent_names, inv_ok)
+    errs = [f for f in findings if f.level == "error"]
+    warns = [f for f in findings if f.level == "warn"]
+    infos = [f for f in findings if f.level == "info"]
+    for f in errs:
+        st.error(f.text)
+    unknown = [n for t in stored for n in t.everyone if n not in known]
+    if unknown and st.button(f"명단에 추가: {', '.join(unknown)}", key=f"addroster_{did}"):
+        for nm in unknown:
+            project["roster"].append({c: None for c in ROSTER_COLUMNS} | {"이름": nm, "조사자": nm in {t.inv for t in stored},
+                                                                       "섹장": nm in {t.lead for t in stored}, "카메라": False})
+        _bump("roster")
+        _save()
+        st.rerun()
+    for f in warns:
+        st.warning(f.text)
+    if infos:
+        with st.expander(f"참고 {len(infos)}건 (추가 인원, 이전 일차와 겹침)"):
+            for f in infos:
+                st.write(f.text)
+    elif not errs and not warns:
+        st.success("규칙 위반이나 이전 일차와의 겹침이 없습니다.")
+    dc = st.columns([2, 1])
+    dc[0].download_button(f"{day['label']} 결과 엑셀로 받기 (조별 표 + 사람별 목록)",
+                          day_xlsx(result_to_df(stored, cams), result_to_list(stored, absent, notes), day["label"]),
+                          file_name=f"조편성_{day['label']}.xlsx", key=f"dl_{did}", width="stretch",
+                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with dc[1].popover("결과 비우기", width="stretch"):
+        if st.button("편성 결과 지우기", key=f"clr_{did}", type="primary"):
+            day["result"], day["absent"], day["notes"] = None, [], {}
+            _bump("piv" + did)
+            _bump("lst" + did)
+            _save()
+            st.rerun()
 
 
 # ---------------------------------------------------------------- 이력

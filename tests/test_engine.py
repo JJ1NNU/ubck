@@ -62,7 +62,7 @@ def test_history_reduces_repeats():
     h = build_history([day1])
     sol = solve(people, teams(6), history=h, time_limit=2, seed=4).solutions[0]
     assert sol.breakdown["역할 반복"] == 0       # 조사자 20명, 섹장 20명이라 반복 없이 가능
-    assert sol.breakdown["같은 조 재배정"] == 0
+    assert sol.breakdown["이미 간 섹터"] == 0
     # 10명씩 6개 조. 자기 조를 피하면 새 조 하나는 나머지 5개 조에서 10명을 받으므로
     # 이전 조원끼리 최소 5쌍이 겹친다 → 6개 조 합계 30이 이론상 최솟값
     assert sol.breakdown["짝꿍 반복"] == 30
@@ -96,3 +96,56 @@ def test_parsers():
     assert parse_groups("철수-영희, 민수 - 지수 - 하늘\n혼자") == [["철수", "영희"], ["민수", "지수", "하늘"]]
     ft, fr, bad = parse_fixed("철수=하구3\n영희: 조사자, 이상한줄, 민수=없는조", ["하구3"])
     assert ft == {"철수": "하구3"} and fr == {"영희": "조사자"} and len(bad) == 2
+
+
+def test_no_revisit_across_days():
+    people = club()
+    names = [f"하구{i + 1}" for i in range(6)]
+    days = []
+    for d in range(4):
+        h = build_history(days)
+        sol = solve(people, [TeamSpec(n) for n in names], Rules(no_revisit=True), history=h,
+                    time_limit=0.8, seed=d).solutions[0]
+        assert not any(h.team[n][t.name] for t in sol.teams for n in t.everyone)
+        assert not sol.violations
+        days.append(sol.teams)
+    # 각자 4일 동안 서로 다른 섹터 4곳
+    h = build_history(days)
+    assert all(len(h.team[p.name]) == 4 for p in people)
+
+
+def test_no_revisit_explains_when_impossible():
+    people = club(30)
+    one = [TeamSpec("하구1"), TeamSpec("하구2")]
+    days = [solve(people, one, time_limit=0.3, seed=0).solutions[0].teams,
+            solve(people, one, time_limit=0.3, seed=1).solutions[0].teams]
+    # 이틀 동안 두 조를 모두 섞어 다녀온 사람이 생기면, 같은 두 조로 셋째 날은 불가능
+    h = build_history(days)
+    if any(len(h.team[p.name]) == 2 for p in people):
+        with pytest.raises(SolveError) as e:
+            solve(people, one, Rules(no_revisit=True), history=h, time_limit=0.3)
+        assert any("이미 모두 다녀왔습니다" in m for m in e.value.messages)
+
+
+def test_fixed_team_overrides_no_revisit_with_warning():
+    people = club()
+    spec = teams(6)
+    d1 = solve(people, spec, time_limit=0.5, seed=0).solutions[0].teams
+    first_team = next(t.name for t in d1 if "P044" in t.everyone)
+    res = solve(people, spec, Rules(no_revisit=True, fixed_team={"P044": first_team}),
+                history=build_history([d1]), time_limit=0.5, seed=1)
+    assert where(res.solutions[0])["P044"] == first_team
+    assert any("고정을 따랐습니다" in w for w in res.warnings)
+
+
+def test_rotation_gives_every_qualified_person_a_turn_first():
+    # 조사자 자격 20명, 6개 조 → 3일 동안 18자리. 3일째까지 아무도 두 번 하지 않아야 한다.
+    people = club()
+    days = []
+    for d in range(3):
+        sol = solve(people, teams(6), Rules(rotate_inv=True), history=build_history(days),
+                    time_limit=0.8, seed=d).solutions[0]
+        days.append(sol.teams)
+    h = build_history(days)
+    counts = [h.role[p.name]["조사자"] for p in people if p.can_inv]
+    assert max(counts) == 1 and sum(counts) == 18

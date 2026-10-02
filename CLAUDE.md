@@ -27,18 +27,17 @@ python -m ubck.map_view --key KEY -o map.html   # Streamlit 없이 쓰는 독립
 ## 구조
 
 ```
-web.py                     진입점. st.navigation으로 세 페이지 연결 (배포 설정이 web.py를 가리키므로 파일명 유지)
+web.py                     진입점. st.navigation으로 두 페이지(지도, 조 편성) 연결 (배포 설정이 web.py를 가리키므로 파일명 유지)
 ubck/gis.py                Shapefile → 지도용 JSON. 섹터 정규화, 경로 조각 정렬·방향 맞추기, 폴리곤-섹터 연결
 ubck/map_view.py           지도 HTML 조립(템플릿에 JSON 주입), 독립 지도 파일 내보내기 CLI
 ubck/assets/map.html       지도 본체. Leaflet + 순수 JS. 위치 추적·진행률·이탈 판정이 전부 브라우저 안에서 돈다
 ubck/teams/model.py        Person / TeamSpec / Rules / Weights / TeamResult, 텍스트 파싱
 ubck/teams/engine.py       조 편성 엔진 (담금질 탐색). docs/team-engine.md 참고
 ubck/teams/history.py      이전 일차 결과 → 역할·짝꿍·조 이력 집계
-ubck/teams/report.py       편성표 점검 (규칙 위반 / 누락 / 이전 일차와 겹침)
-ubck/teams/io.py           편성표 ↔ DataFrame ↔ xlsx, 예전 xlsx 가져오기, 개인별 이력표
+ubck/teams/report.py       편성표 점검 (규칙 위반 / 누락 / 이전 일차와 겹침), 결원 뒤 빈 역할 후보 제안
+ubck/teams/io.py           조별 표·사람별 목록 ↔ DataFrame ↔ xlsx, 예전 xlsx 가져오기, 개인별 이력표
 ubck/storage.py            프로젝트 JSON 저장/불러오기/스키마 보정
-ubck/fieldnote.py          야장 정리(국명⇥개체수 → "국명 <수>, ..." 한 줄)
-ubck/pages/*.py            Streamlit 화면 (map_page, teams_page, fieldnote_page)
+ubck/pages/*.py            Streamlit 화면 (map_page, teams_page)
 data/                      QGIS에서 만든 Shapefile 6세트 (EPSG:3857)
 tests/                     pytest
 docs/                      설계 메모 (map.md, team-engine.md)
@@ -56,6 +55,7 @@ docs/                      설계 메모 (map.md, team-engine.md)
 | 쩌리 | 동아리 내부 은어. 조사자·섹장이 아닌 일반 조원. UI에서도 이 말을 그대로 쓴다 |
 | 카메라 | 카메라를 가진 사람. 조마다 고르게 퍼져야 한다 |
 | 일차 | 조사 날짜 단위(1일차, 2일차…). 이전 일차 편성이 다음 일차 편성에 반영된다 |
+| 결원 / 추가 | 편성 확정 뒤 당일 빠진 사람 / 계획에 없이 온 사람. 사람별 목록의 '상태'와 새 줄로 사람이 직접 고친다 |
 
 ## 데이터 메모
 
@@ -78,6 +78,16 @@ docs/                      설계 메모 (map.md, team-engine.md)
 - 엔진은 '누가 어느 조인가'만 탐색하고 조사자·섹장은 조 안에서 자동 선택한다 → 한 사람이 두 자리에 들어가는 예전 버그가 구조적으로 불가능.
 - '꼭 같은 조'는 한 덩어리로 움직여 항상 지켜지고, '꼭 다른 조'·'조 고정'은 위반하는 이동을 하지 않는다. 인원·역할 채우기·역할 고정은 큰 벌점(BIG)으로 다룬다.
 - 품질 확인: 100명/10개 조, 60명/6개 조에서 2일차 짝꿍 반복이 이론상 최솟값(자기 조 이름을 피하면 생기는 비둘기집 하한)과 같게 나온다. 테스트 `test_history_reduces_repeats`가 이를 고정한다.
+- 사용자 요구로 두 규칙을 기본으로 켠다(설정에서 끌 수 있음, 프로젝트 settings에 저장).
+  - **이미 간 섹터 재배정 금지**(`Rules.no_revisit`): 조 이름이 같으면 같은 섹터. '꼭 다른 조'처럼 위반 이동을 하지 않는 하드 제약.
+    '조 고정'이 우선(경고). 누군가 오늘 조를 모두 다녀왔으면 이유를 들어 거부한다.
+  - **조사자 순환**(`Rules.rotate_inv`): 이미 조사자를 한 횟수 × ROTATE(1000) 벌점. 역할 채우기(BIG)보다 작고 나머지보다 훨씬 커서
+    미경험 자격자가 있으면 반복자가 조사자가 되지 않는다. 일정(settings.total_days) 안에 끝나는지는 화면의 '조사자 순환' 상자가 계산한다.
+  - 5일·10개 조·100명 시뮬레이션에서 재방문 0, 자격자 40명이 4일 안에 전원 1회 확인.
+- 당일 변경은 시스템이 자동으로 다시 짜지 않고 **사람이 고치기 쉬운 형식**을 준다(사용자 결정): 사람별 목록(이름|조|역할|상태|메모),
+  결원은 원래 자리를 남긴 채 표시(day["absent"]), 빈 역할 후보·인원 적은 조를 '고칠 때 참고'로 제안. 조별 표와 사람별 목록은 같은 데이터를
+  두 형식으로 보여 주며, 한쪽을 고치면 저장 후 다른 쪽 버전을 올리고 다시 그린다. 사람별 목록 열에 `required`를 걸지 말 것
+  (덜 채운 새 줄이 아예 넘어오지 않아 '조가 비어 있습니다' 안내를 못 한다).
 - `st.data_editor`는 **입력 표를 버전이 바뀔 때만 새로 만든다**(teams_page `_stable_df`). 편집 결과를 다음 실행의 입력으로 다시 넣으면 수정이 사라지거나 두 번 적용된다. 예전 앱의 "Enter로는 반영이 안 돼요" 문제의 원인이었다. 표를 코드에서 바꿨다면 `_bump(이름)`으로 버전을 올린다.
 
 ## 작업 규칙
@@ -90,6 +100,7 @@ docs/                      설계 메모 (map.md, team-engine.md)
 ## 열린 질문 / 다음 할 일
 
 - 하천 폴리곤 `하구2` 값이 오타인지 사용자 확인 필요.
-- 조 편성 추가 제약 중 무엇을 넣을지 사용자가 고르는 중 → docs/team-engine.md '확장 아이디어'.
+- 조 편성 추가 제약 중 남은 후보 → docs/team-engine.md '확장 아이디어'. (재방문 금지·조사자 순환·결원 수정 형식은 2026-10 반영, 야장 정리기는 사용자 요청으로 삭제)
+- '구역'을 섹터(조 이름) 단위로 해석했다. 하구 폴리곤(A1, G2…) 단위 재방문까지 막을지는 사용자 확인 필요.
 - Streamlit Cloud 휘발 문제를 근본적으로 없애려면 Google Sheets/Supabase 같은 외부 저장소 연결이 필요하다(아직 안 함).
 - iPhone Safari는 iframe 안 전체 화면을 지원하지 않는다. 현장에서 불편하면 `python -m ubck.map_view`로 만든 독립 지도 파일을 GitHub Pages 등(https)에 올리는 방안이 있다.

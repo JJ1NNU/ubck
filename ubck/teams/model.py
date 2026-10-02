@@ -33,6 +33,8 @@ class Rules:
     apart: list[list[str]] = field(default_factory=list)      # 서로 다른 조여야 하는 묶음(묶음 안 모든 쌍)
     fixed_team: dict[str, str] = field(default_factory=dict)  # 이름 → 조 이름
     fixed_role: dict[str, str] = field(default_factory=dict)  # 이름 → 조사자/섹장
+    no_revisit: bool = False   # 이전 일차에 배정됐던 조(=섹터)에는 다시 배정하지 않음 (조 고정이 우선)
+    rotate_inv: bool = False   # 조사자를 아직 안 해 본 자격자를 먼저 조사자로
 
 
 @dataclass

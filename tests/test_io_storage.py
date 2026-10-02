@@ -4,7 +4,6 @@ import json
 import pandas as pd
 
 from ubck import storage
-from ubck.fieldnote import format_line, merge_same_species, parse
 from ubck.teams.history import build_history
 from ubck.teams.io import df_to_result, fairness_df, project_xlsx, read_result_xlsx, result_to_df
 from ubck.teams.model import Rules, TeamResult
@@ -80,8 +79,59 @@ def test_fairness_and_project_export():
     assert xl.sheet_names[:2] == ["1일차", "2일차"] and "개인별 이력" in xl.sheet_names
 
 
-def test_fieldnote():
-    p = parse("청둥오리\t120\n\n흰뺨검둥오리\t35\n큰고니 8\n알수없음\t많음\n청둥오리\t5")
-    assert format_line(p.items) == "청둥오리 <120>, 흰뺨검둥오리 <35>, 큰고니 <8>, 청둥오리 <5>"
-    assert p.skipped == ["알수없음\t많음".strip()]
-    assert format_line(merge_same_species(p.items)).startswith("청둥오리 <125>")
+def test_person_list_roundtrip_with_absent_and_added():
+    from ubck.teams.io import list_to_result, result_to_list
+    df = result_to_list(sample(), [{"name": "아", "team": "1조", "role": "쩌리"}], {"다": "오후 합류"})
+    assert list(df["상태"]).count("결원") == 1
+    teams, absent, notes, problems = list_to_result(df, ["1조", "2조"])
+    assert [t.to_dict() for t in teams] == [t.to_dict() for t in sample()]
+    assert absent == [{"name": "아", "team": "1조", "role": "쩌리"}] and notes == {"다": "오후 합류"} and not problems
+
+    # 당일 변경: 조사자 '가' 결원, '다'를 조사자로, 새 사람 '자'를 2조에 추가
+    df.loc[df["이름"] == "가", "상태"] = "결원"
+    df.loc[df["이름"] == "다", "역할"] = "조사자"
+    df.loc[len(df)] = {"이름": "자", "조": "2조", "역할": "쩌리", "상태": "참석", "메모": ""}
+    teams, absent, _, problems = list_to_result(df, ["1조", "2조"])
+    assert teams[0].inv == "다" and "가" not in teams[0].everyone and "자" in teams[1].members
+    assert {"name": "가", "team": "1조", "role": "조사자"} in absent and not problems
+
+
+def test_person_list_reports_double_roles_and_missing_team():
+    from ubck.teams.io import list_to_result
+    df = pd.DataFrame([{"이름": "가", "조": "1조", "역할": "조사자", "상태": "참석"},
+                       {"이름": "나", "조": "1조", "역할": "조사자", "상태": "참석"},
+                       {"이름": "다", "조": None, "역할": "쩌리", "상태": "참석"},
+                       {"이름": "가", "조": "2조", "역할": "쩌리", "상태": "참석"}])
+    teams, _, _, problems = list_to_result(df, ["1조", "2조"])
+    text = " ".join(problems)
+    assert "조사자가 둘 이상" in text and "다의 조가 비어" in text and "두 번" in text
+    assert teams[0].inv == "가" and "나" in teams[0].members
+
+
+def test_check_result_rotation_and_revisit_warnings():
+    h = build_history([[TeamResult("1조", "가", "나", ["다"])]])
+    today = [TeamResult("1조", "가", "라", ["다"])]   # 가: 조사자 두 번째 + 1조 재방문, 다: 미경험인데 쩌리
+    f = check_result(today, {"가", "다", "라"}, {"가", "나", "다", "라"},
+                     Rules(no_revisit=True, rotate_inv=True), h, set(), {"가", "다"})
+    warns = " ".join(x.text for x in f if x.level == "warn")
+    assert "아직 안 해 본" in warns and "이미 1조에" in warns
+
+
+def test_change_hints_suggest_vacancy_fill():
+    from ubck.teams.report import change_hints
+    h = build_history([])
+    teams = [TeamResult("1조", None, "나", ["다", "라"]), TeamResult("2조", "마", "바", ["사", "아", "자", "차"])]
+    hints = change_hints(teams, h, inv_ok={"라", "마"}, lead_ok={"나", "바"}, no_revisit=True)
+    assert any("1조 조사자 후보" in x and "라(처음)" in x for x in hints)
+    assert any("인원이 적은 조" in x for x in hints)
+
+
+def test_day_xlsx_has_pivot_and_person_list():
+    from ubck.teams.io import day_xlsx, result_to_list
+    data = day_xlsx(result_to_df(sample()), result_to_list(sample(), [{"name": "아", "team": "2조", "role": "쩌리"}]), "3일차")
+    xl = pd.ExcelFile(io.BytesIO(data))
+    assert xl.sheet_names == ["3일차", "사람별"]
+    people = xl.parse("사람별")
+    assert list(people.columns) == ["이름", "조", "역할", "상태", "메모"] and (people["상태"] == "결원").sum() == 1
+    # 첫 시트는 예전 가져오기 형식 그대로 읽힌다
+    assert [t.name for t in read_result_xlsx(io.BytesIO(data))] == ["1조", "2조"]

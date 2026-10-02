@@ -20,6 +20,7 @@ from .history import History
 from .model import ROLE_INV, ROLE_LEAD, Person, Rules, TeamResult, TeamSpec, Weights
 
 BIG = 10_000.0
+ROTATE = 1_000.0   # 조사자 순환: 이미 해 본 사람이 조사자가 될 때 1회당 벌점 (역할 채우기보다 작고 나머지보다 훨씬 큼)
 
 
 class SolveError(Exception):
@@ -191,13 +192,40 @@ class _Problem:
                 errors.append(f"한 조에 '{r}' 역할 고정이 두 명 이상입니다.")
         if sum(1 for r in fixed_role.values() if r == ROLE_INV) > k or sum(1 for r in fixed_role.values() if r == ROLE_LEAD) > k:
             errors.append("역할 고정 인원이 조 개수보다 많습니다.")
+
+        # ---- 이미 간 조(섹터) 금지 ----
+        self.forbid: list[set[int]] = [set() for _ in range(U)]
+        if rules.no_revisit:
+            for u, mem in enumerate(self.units):
+                for t, spec in enumerate(teams):
+                    if any(history.team[people[i].name][spec.name] for i in mem):
+                        self.forbid[u].add(t)
+                if self.pin[u] is not None and self.pin[u] in self.forbid[u]:
+                    self.forbid[u].discard(self.pin[u])
+                    self.warnings.append(f"{', '.join(people[i].name for i in mem)}: 이미 다녀온 "
+                                         f"{teams[self.pin[u]].name}에 고정되어 있어 고정을 따랐습니다.")
+                if self.pin[u] is None and len(self.forbid[u]) == k:
+                    who = ", ".join(people[i].name for i in mem)
+                    errors.append(f"{who}은(는) 오늘의 조(섹터)를 이미 모두 다녀왔습니다. "
+                                  f"그 사람을 조 고정하거나 '이미 간 섹터에 다시 배정하지 않기'를 끄세요.")
+            # 묶음끼리 '꼭 다른 조'가 걸린 경우 남은 선택지가 모자라면 미리 알림
+            for u in range(U):
+                if self.pin[u] is None and self.apart[u]:
+                    free = k - len(self.forbid[u])
+                    if free == 1:
+                        only = next(t for t in range(k) if t not in self.forbid[u])
+                        for v in self.apart[u]:
+                            if self.pin[v] == only:
+                                errors.append(f"{', '.join(people[i].name for i in self.units[u])}이(가) 갈 수 있는 조는 "
+                                              f"{teams[only].name}뿐인데 '꼭 다른 조' 상대가 그 조에 고정되어 있습니다.")
         if errors:
             raise SolveError(list(dict.fromkeys(errors)))
 
         # ---- 비용 계수 ----
         w = weights
-        self.inv_cost = [w.role * (history.role[p.name][ROLE_INV] + 0.5 * history.role[p.name][ROLE_LEAD]) if self.can_inv[i] else None
-                         for i, p in enumerate(people)]
+        inv_w = ROTATE if rules.rotate_inv else w.role
+        self.inv_cost = [inv_w * history.role[p.name][ROLE_INV] + w.role * 0.5 * history.role[p.name][ROLE_LEAD]
+                         if self.can_inv[i] else None for i, p in enumerate(people)]
         self.lead_cost = [w.role * (history.role[p.name][ROLE_LEAD] + 0.5 * history.role[p.name][ROLE_INV]) if self.can_lead[i] else None
                           for i, p in enumerate(people)]
         self.P = [[0.0] * n for _ in range(n)]
@@ -313,6 +341,8 @@ class _State:
         self.total = sum(self.cost_t)
 
     def apart_ok(self, u: int, t: int, ignore: int | None = None) -> bool:
+        if t in self.pb.forbid[u]:
+            return False
         ap = self.pb.apart[u]
         if not ap:
             return True
@@ -390,7 +420,7 @@ def _initial(pb: _Problem, rng: random.Random) -> list[int] | None:
             gives_lead = any(pb.can_lead[i] for i in pb.units[u])
             best, best_key = None, None
             for t in range(k):
-                if any(v in pb.apart[u] for v in units_in[t]):
+                if t in pb.forbid[u] or any(v in pb.apart[u] for v in units_in[t]):
                     continue
                 need = (gives_inv and inv_in[t] == 0) + (gives_lead and lead_in[t] == 0)
                 room = pb.hi[t] - size[t] - len(pb.units[u])
@@ -410,7 +440,7 @@ def _breakdown(pb: _Problem, members: list[list[int]], history: History) -> tupl
     people = pb.people
     teams: list[TeamResult] = []
     violations: list[str] = []
-    pair_rep = team_rep = role_rep = 0
+    pair_rep = team_rep = role_rep = first_inv = 0
     cams = []
     for t, mem in enumerate(members):
         _, inv, lead, viol = pb.roles(mem)
@@ -434,13 +464,16 @@ def _breakdown(pb: _Problem, members: list[list[int]], history: History) -> tupl
             team_rep += 1 if history.team[people[i].name][name] else 0
         if inv is not None and history.role[people[inv].name][ROLE_INV]:
             role_rep += 1
+        elif inv is not None:
+            first_inv += 1
         if lead is not None and history.role[people[lead].name][ROLE_LEAD]:
             role_rep += 1
         cams.append(sum(pb.cam[i] for i in mem))
     sizes = [len(m) for m in members]
     bd = {
         "짝꿍 반복": pair_rep,
-        "같은 조 재배정": team_rep,
+        "이미 간 섹터": team_rep,
+        "처음 조사자": f"{first_inv}/{len(members)}조",
         "역할 반복": role_rep,
         "조별 인원": f"{min(sizes)}~{max(sizes)}명" if sizes else "-",
         "조별 카메라": f"{min(cams)}~{max(cams)}대" if cams else "-",
@@ -467,7 +500,8 @@ def solve(people: list[Person], teams: list[TeamSpec], rules: Rules | None = Non
     for r in range(restarts):
         init = _initial(pb, rng)
         if init is None:
-            raise SolveError(["'꼭 다른 조' 조건을 모두 지키는 배치를 찾지 못했습니다. 조건이 너무 촘촘하지 않은지 확인해 주세요."])
+            raise SolveError(["'꼭 다른 조'와 '이미 간 섹터 금지'를 함께 지키는 배치를 찾지 못했습니다. "
+                              "'꼭 다른 조' 묶음을 줄이거나 '이미 간 섹터에 다시 배정하지 않기'를 꺼 보세요."])
         st = _State(pb, init)
         best_total, best_members = st.total, [m[:] for m in st.members]
         if len(free_units) == 0 or pb.k == 1:

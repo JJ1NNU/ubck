@@ -54,6 +54,85 @@ def df_to_result(df: pd.DataFrame) -> list[TeamResult]:
     return teams
 
 
+# ---------- 사람별 목록 (당일 결원·추가를 고치기 쉬운 형식) ----------
+LIST_COLUMNS = ["이름", "조", "역할", "상태", "메모"]
+STATE_IN = "참석"
+STATE_OUT = "결원"
+_ROLE_ORDER = {ROLE_INV: 0, ROLE_LEAD: 1, ROLE_MEMBER: 2}
+
+
+def result_to_list(teams: list[TeamResult], absent: list[dict] | None = None,
+                   notes: dict[str, str] | None = None) -> pd.DataFrame:
+    """조 순서 → 역할 순서로 한 사람 한 줄. 결원은 원래 자리(조·역할)를 그대로 보여 준다."""
+    notes = notes or {}
+    rows = []
+    order = {t.name: i for i, t in enumerate(teams)}
+    for t in teams:
+        for n in t.everyone:
+            rows.append({"이름": n, "조": t.name, "역할": t.role_of(n), "상태": STATE_IN, "메모": notes.get(n, "")})
+    for a in absent or []:
+        rows.append({"이름": a["name"], "조": a.get("team") or None, "역할": a.get("role") or ROLE_MEMBER,
+                     "상태": STATE_OUT, "메모": notes.get(a["name"], "")})
+    rows.sort(key=lambda r: (order.get(r["조"], len(order)), _ROLE_ORDER.get(r["역할"], 3), r["상태"] == STATE_OUT))
+    return pd.DataFrame(rows, columns=LIST_COLUMNS)
+
+
+def list_to_result(df: pd.DataFrame, team_names: list[str]):
+    """사람별 목록 → (조 목록, 결원 목록, 메모, 문제점).
+
+    한 조에 조사자/섹장이 둘 이상이면 먼저 나온 사람만 그 역할로 두고 나머지는 쩌리로 넣은 뒤 문제점으로 알린다.
+    """
+    problems: list[str] = []
+    names_in_order = list(team_names)
+    by_team: dict[str, TeamResult] = {}
+    absent: list[dict] = []
+    notes: dict[str, str] = {}
+    seen: dict[str, str] = {}
+    if df is None:
+        return [], [], {}, []
+    for r in df.to_dict("records"):
+        name = clean_name(r.get("이름"))
+        if not name:
+            continue
+        team = str(r.get("조") or "").strip()
+        team = "" if team.lower() in ("nan", "none") else team
+        role = str(r.get("역할") or "").strip() or ROLE_MEMBER
+        state = str(r.get("상태") or "").strip() or STATE_IN
+        memo = r.get("메모")
+        if memo is not None and str(memo).strip() and str(memo).lower() != "nan":
+            notes[name] = str(memo).strip()
+        if state == STATE_OUT:
+            absent.append({"name": name, "team": team or None, "role": role})
+            continue
+        if name in seen:
+            problems.append(f"{name}이(가) 목록에 두 번 있습니다. 한 줄을 지우거나 '결원'으로 바꾸세요.")
+            continue
+        seen[name] = team
+        if not team:
+            problems.append(f"{name}의 조가 비어 있습니다. '조' 칸에서 고르세요.")
+            continue
+        if team not in names_in_order:
+            names_in_order.append(team)
+        t = by_team.setdefault(team, TeamResult(team))
+        if role == ROLE_INV:
+            if t.inv:
+                problems.append(f"{team}에 조사자가 둘 이상입니다: {t.inv}, {name}")
+                t.members.append(name)
+            else:
+                t.inv = name
+        elif role == ROLE_LEAD:
+            if t.lead:
+                problems.append(f"{team}에 섹장이 둘 이상입니다: {t.lead}, {name}")
+                t.members.append(name)
+            else:
+                t.lead = name
+        else:
+            t.members.append(name)
+    absent = [a for a in absent if a["name"] not in seen]   # 결원 줄과 참석 줄이 같이 있으면 참석으로 본다
+    teams = [by_team.get(n, TeamResult(n)) for n in names_in_order]
+    return teams, absent, notes, problems
+
+
 def read_result_xlsx(file) -> list[TeamResult]:
     """예전 웹앱에서 내려받은 '조편성_n일차.xlsx'(역할 열 + 조별 열)도 그대로 읽는다."""
     df = pd.read_excel(file, sheet_name=0, dtype=str).fillna("")
@@ -71,10 +150,18 @@ def _sheet_name(label: str, used: set[str]) -> str:
     return name
 
 
-def day_xlsx(df: pd.DataFrame, label: str) -> bytes:
+def day_xlsx(pivot: pd.DataFrame, people: pd.DataFrame | None, label: str) -> bytes:
+    """첫 시트는 조별 표(출력용), 둘째 시트는 사람별 목록(결원·추가를 손으로 고치기 좋은 형식)."""
     buf = io.BytesIO()
+    used: set[str] = set()
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, sheet_name=_sheet_name(label, set()), index=False)
+        pivot.to_excel(w, sheet_name=_sheet_name(label, used), index=False)
+        if people is not None:
+            people.to_excel(w, sheet_name=_sheet_name("사람별", used), index=False)
+        for ws in w.book.worksheets:
+            for col in ws.columns:
+                width = max(len(str(c.value or "")) for c in col)
+                ws.column_dimensions[col[0].column_letter].width = min(30, max(8, width * 2 + 2))
     return buf.getvalue()
 
 

@@ -30,7 +30,8 @@ def default_path() -> Path:
 
 def empty_project() -> dict:
     return {"version": SCHEMA_VERSION, "roster": [], "days": [],
-            "settings": {"weights": dict(DEFAULT_WEIGHTS), "attr_weights": {}, "time_limit": 8},
+            "settings": {"weights": dict(DEFAULT_WEIGHTS), "attr_weights": {}, "time_limit": 8,
+                         "no_revisit": True, "rotate_inv": True, "total_days": 5},
             "updated": None}
 
 
@@ -38,7 +39,8 @@ def new_day(label: str, prev: dict | None = None) -> dict:
     """새 일차. 이전 일차가 있으면 조 구성·참가 여부·규칙을 그대로 이어받는다."""
     day = {"id": uuid.uuid4().hex[:8], "label": label,
            "teams": [{"name": f"{i + 1}조", "size": None} for i in range(3)],
-           "participants": {}, "rules": {"together": "", "apart": "", "fixed": ""}, "result": None}
+           "participants": {}, "rules": {"together": "", "apart": "", "fixed": ""}, "result": None,
+           "absent": [], "notes": {}}
     if prev:
         day["teams"] = [dict(t) for t in prev.get("teams", [])]
         day["participants"] = {k: dict(v) for k, v in prev.get("participants", {}).items()}
@@ -71,7 +73,9 @@ def normalize(project: dict) -> dict:
     days = []
     for d in project.get("days") or []:
         nd = new_day(d.get("label") or f"{len(days) + 1}일차")
-        nd.update({k: d[k] for k in ("id", "teams", "participants", "rules", "result") if k in d})
+        nd.update({k: d[k] for k in ("id", "teams", "participants", "rules", "result", "absent", "notes") if k in d})
+        nd["absent"] = nd.get("absent") or []
+        nd["notes"] = nd.get("notes") or {}
         nd["rules"] = {**{"together": "", "apart": "", "fixed": ""}, **(nd.get("rules") or {})}
         days.append(nd)
     out["days"] = days
